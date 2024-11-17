@@ -168,7 +168,7 @@ async def analyze_company(interaction: discord.Interaction, company_name: str):
 
         # Initialize and run the enhanced stock analysis flow
         stock_flow = EnhancedStockAnalysisFlow()
-        result = stock_flow.kickoff(inputs={"ticker": ticker})
+        result = await stock_flow.kickoff_async(inputs={"ticker": ticker})
 
         # Get the generated report filename
         report_file = f"stock_analysis_{ticker}_{datetime.now().strftime('%Y%m%d')}.md"
