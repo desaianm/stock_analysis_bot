@@ -10,3 +10,6 @@ ollama
 huggingface_hub
 discord.py
 scipy
+quickfs
+matplotlib
+yfinance
