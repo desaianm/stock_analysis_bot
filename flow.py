@@ -301,9 +301,12 @@ class EnhancedStockAnalysisFlow(Flow[StockData]):
                         
                         Sentiment Analysis Data:
                         {self.state.sentiment_data['analysis']}
+
+                    Make sure to include all the data in the report.
+                    Final Output should be a full report in markdown format.
             """,
             agent=self.report_writer,
-            expected_output="A Report in markdown format"
+            expected_output="A detailed report in markdown format"
         )
         crew = Crew(agents=[self.report_writer], tasks=[report_task])
         result = crew.kickoff()
