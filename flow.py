@@ -318,16 +318,16 @@ class EnhancedStockAnalysisFlow(Flow[StockData]):
     
     
 
-def main():
-    # Initialize the flow
-    stock_flow = EnhancedStockAnalysisFlow()
+# def main():
+#     # Initialize the flow
+#     stock_flow = EnhancedStockAnalysisFlow()
     
-    # Start the flow with initial state
-    result = stock_flow.kickoff(inputs={
-        "ticker": "MRVL"  # Replace with desired stock ticker
-    })
+#     # Start the flow with initial state
+#     result = stock_flow.kickoff(inputs={
+#         "ticker": "MRVL"  # Replace with desired stock ticker
+#     })
     
-    print("Flow Result:", result)
+#     print("Flow Result:", result)
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
