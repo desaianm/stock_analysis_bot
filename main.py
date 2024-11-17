@@ -188,16 +188,15 @@ async def analyze_company(interaction: discord.Interaction, company_name: str):
 
 
 def main():
-    # Get token from environment variable
-    # token = os.getenv('DISCORD_TOKEN')
-    # if not token:
-    #     raise ValueError("Discord token not found in environment variables")
+    #Get token from environment variable
+    token = os.getenv('DISCORD_TOKEN')
+    if not token:
+        raise ValueError("Discord token not found in environment variables")
     
-    # # Run the bot
-    # bot.run(token)
+    # Run the bot
+    bot.run(token)
 
-    company_data = asyncio.run(company_lookup("Apple"))
-    print(company_data)
+   
 
 if __name__ == "__main__":
     main()
