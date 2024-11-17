@@ -2,3 +2,5 @@ myenv/
 .env
 outputs/
 repopack-output.txt
+__pycache__/
+agentops.log

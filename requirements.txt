@@ -8,3 +8,5 @@ python-dotenv
 openai
 ollama
 huggingface_hub
+discord.py
+scipy
