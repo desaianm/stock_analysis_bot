@@ -4,3 +4,4 @@ outputs/
 repopack-output.txt
 __pycache__/
 agentops.log
+node_modules/
