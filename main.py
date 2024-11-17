@@ -1,4 +1,5 @@
 import asyncio
+import traceback
 
 from crewai import Crew
 from agents import FinancialResearchAgents
@@ -71,8 +72,8 @@ async def company_lookup(company_name):
         crew = Crew(
             agents=[company_lookup_agent], 
             tasks=[company_lookup_task],
-            verbose=True,
-            memory=True
+            verbose=False,
+            memory=False
         )
         result = await crew.kickoff_async()
         company_data = result.to_dict()
@@ -167,7 +168,7 @@ async def analyze_company(interaction: discord.Interaction, company_name: str):
 
         # Initialize and run the enhanced stock analysis flow
         stock_flow = EnhancedStockAnalysisFlow()
-        result = await stock_flow.kickoff_async(inputs={"ticker": ticker})
+        result = stock_flow.kickoff(inputs={"ticker": ticker})
 
         # Get the generated report filename
         report_file = f"stock_analysis_{ticker}_{datetime.now().strftime('%Y%m%d')}.md"
@@ -184,6 +185,7 @@ async def analyze_company(interaction: discord.Interaction, company_name: str):
     except Exception as e:
         await interaction.followup.send("An error occurred while processing your request.")
         print(f"Error in analyze command: {str(e)}")
+        traceback.print_exc()
 
 
 

@@ -393,6 +393,12 @@ class MarkdownReportCreationTasks:
             Find the ticker symbol for the company with the given name.
             Find company information for the company with the given name.
             Make sure it is a publicly traded company and listed on a major exchange like NYSE, NASDAQ, AMEX, etc.
+
+            Output Format:
+                 ticker: str 
+                company_name: str 
+                company_info: str 
+
             """ ,
             agent=agent,
             expected_output="""Json output with given schema""",
