@@ -1,3 +1,4 @@
+from dataclasses import Field
 from crewai import Task
 from textwrap import dedent
 from typing import List
@@ -5,6 +6,10 @@ from pydantic import BaseModel
 from datetime import datetime   
 import pytz
 
+class CompanyDataOutput(BaseModel):
+    ticker: str 
+    company_name: str 
+    company_info: str 
 
 
 class MarkdownReportCreationTasks:
@@ -379,4 +384,17 @@ class MarkdownReportCreationTasks:
             """,
             agent=agent,
             expected_output="hello",
+        )
+    
+    async def company_lookup_task(self, agent, name ):
+        return Task(
+            description=f"""
+            Company Name: {name}
+            Find the ticker symbol for the company with the given name.
+            Find company information for the company with the given name.
+            Make sure it is a publicly traded company and listed on a major exchange like NYSE, NASDAQ, AMEX, etc.
+            """ ,
+            agent=agent,
+            expected_output="""Json output with given schema""",
+            output_pydantic=CompanyDataOutput,
         )

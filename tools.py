@@ -429,3 +429,15 @@ class CompanyInfoTool(BaseTool):
             info.get('forwardPE'),
             info.get('dividendYield')
         ]
+
+# class CompanySearchToolInput(BaseModel):
+#     """Input schema for CompanySearchTool."""
+#     company_name: str = Field(..., description="Company name to search for")
+
+# class CompanySearchTool(BaseTool):
+#     name: str = "Search for a company by name"
+#     description: str = """Useful to search for a company by name and retrieve its symbol."""
+#     args_schema: Type[BaseModel] = CompanySearchToolInput
+
+#     def _run(self, company_name: str) -> str:
+#         return yf.Ticker.search(company_name)

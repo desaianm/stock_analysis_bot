@@ -3,12 +3,7 @@ from textwrap import dedent
 from langchain_community.llms import Ollama
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.llms import HuggingFaceHub, HuggingFaceEndpoint
-from langchain_community.chat_models.huggingface import ChatHuggingFace
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.agents import Tool
-from langchain_community.tools import TavilySearchResults
+
 
 from tools import ExtractionTool, DataFetchingTool, ChartingTool, FinancialReportTool, MarkdownTool, ChatAnalysisTool, StockPriceDataTool,RealTimeQuoteTool,OptionsChainTool,AnalystRecommendationsTool,StockNewsTool,CompanyInfoTool, TavilySearchTool
 from dotenv import load_dotenv
@@ -121,5 +116,14 @@ class FinancialResearchAgents:
             llm=self.claude,
         )
 
+    def company_lookup_agent(self):
+        return Agent(
+            role="Company Lookup Agent",
+            goal=dedent(f"""Search for a company by name and find all the information required for the company."""),
+            backstory=dedent(f"""Expert in finding company information. You are known for providing a detailed company information or any information required for the company."""),
+            tools=[tavily_search_tool],
+            verbose=True,
+            llm=self.OpenAIGPT4,
+        )
 
      
