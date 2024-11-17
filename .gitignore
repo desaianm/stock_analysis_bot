@@ -1,0 +1,4 @@
+myenv/
+.env
+outputs/
+repopack-output.txt
