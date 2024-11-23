@@ -1,7 +1,8 @@
 import asyncio
+import os
 from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
-from crewai import Agent, Task, Crew, Process
+from crewai import LLM, Agent, Task, Crew, Process
 from crewai.tools import BaseTool
 from datetime import datetime
 import numpy as np
@@ -28,6 +29,13 @@ from tools import (
 import pandas as pd
 import json
 from pathlib import Path
+
+claude =  LLM(
+                model="anthropic/claude-3-5-sonnet-20240620",
+                api_key=os.getenv("ANTHROPIC_API_KEY"),
+                max_tokens=8000,
+                temperature=1
+            )
 
 class StockMetrics(BaseModel):
     ticker: str
@@ -186,7 +194,9 @@ class Top20StocksFlow:
         
         # Initial Universe Screening Task
         self.screening_task = Task(
-            description=f"""Screen the entire market to identify the top 50 candidates based on:
+            description=f"""
+            Current Date and Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            Screen the entire market to identify the top 20 candidates based on and take time into context:
             1. Quantitative Factors
                - Growth metrics (revenue, earnings, cash flow growth)
                - Value metrics (P/E, P/B, EV/EBITDA)
@@ -215,7 +225,9 @@ class Top20StocksFlow:
 
         # Sector Analysis Task
         self.sector_task = Task(
-            description=f"""Analyze sectors and recommend optimal allocations:
+            description=f"""
+            Current Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            Analyze sectors and recommend optimal allocations and take current time into context:
             1. Sector Analysis
                - Growth potential
                - Risk factors
@@ -239,7 +251,9 @@ class Top20StocksFlow:
 
         # Tournament Analysis Task
         self.tournament_task = Task(
-            description=f"""Conduct head-to-head stock tournaments:
+            description=f"""
+            Current Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+            Conduct head-to-head stock tournaments:
             1. Tournament Structure
                - Multiple rounds of competition
                - Various evaluation criteria
@@ -250,6 +264,7 @@ class Top20StocksFlow:
                - Growth potential
                - Risk factors
                - Market positioning
+               - Latest Information (Based On Time)
                
             Your reward depends on:
             - Tournament effectiveness
@@ -356,6 +371,15 @@ class Top20StocksFlow:
         self.state.final_portfolio = final_result.raw
         self.state.analysis_complete = True
         
+        final_result.raw = final_result.raw.strip()
+        final_result.raw = final_result.raw[len("```markdown"):].strip()
+        if final_result.raw.startswith("```"):
+            final_result.raw = final_result.raw[len("```"):].strip()
+        if final_result.raw.endswith("```"):
+            final_result.raw = final_result.raw[:-3].strip()
+
+        with open(self.output_dir / "final_portfolio.md", "w") as f:
+            f.write(final_result.raw)
         return self.state.final_portfolio
 
 async def main():

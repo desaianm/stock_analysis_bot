@@ -109,6 +109,9 @@ async def get_top_20(interaction: discord.Interaction):
             file=discord.File(report_file)
         )
         
+        # Remove the file after sending
+        report_file.unlink()
+        
     except Exception as e:
         await interaction.followup.send("An error occurred while processing your request.")
         print(f"Error in top20 command: {e}")
@@ -133,6 +136,9 @@ async def get_undervalued(interaction: discord.Interaction):
             "Analysis complete! Here's your report:",
             file=discord.File(report_file)
         )
+        
+        # Remove the file after sending
+        report_file.unlink()
         
     except Exception as e:
         await interaction.followup.send("An error occurred while processing your request.")
@@ -181,6 +187,9 @@ async def analyze_company(interaction: discord.Interaction, company_name: str):
             f"Analysis complete for {company_name} ({ticker})! Here's your report:",
             file=discord.File(report_file)
         )
+        
+        # Remove the file after sending
+        Path(report_file).unlink()
 
     except Exception as e:
         await interaction.followup.send("An error occurred while processing your request.")
@@ -188,6 +197,15 @@ async def analyze_company(interaction: discord.Interaction, company_name: str):
         traceback.print_exc()
 
 
+@bot.event
+async def on_message(message):
+    if message.author == bot.user:
+        return
+    print(f"Received message: {message.content}")
+
+
+    
+    await bot.process_commands(message)
 
 def main():
     #Get token from environment variable
@@ -199,6 +217,7 @@ def main():
     bot.run(token)
 
    
+
 
 if __name__ == "__main__":
     main()

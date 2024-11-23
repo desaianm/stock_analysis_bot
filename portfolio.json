@@ -1,0 +1,21 @@
+{
+  "holdings": [
+    {
+      "symbol": "NVDA",
+      "shares": 5,
+      "total_value": 709.90
+    },
+    {
+      "symbol": "AMD",
+      "shares": 0.3,
+      "total_value": 53.89
+    },
+    {
+      "symbol": "ACHR", 
+      "shares": 121.44,
+      "total_value": 499.74
+    }
+  ],
+  "total_portfolio_value": 1959.00,
+  "last_updated": "2024-01-17T12:00:00Z"
+}

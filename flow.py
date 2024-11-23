@@ -311,6 +311,14 @@ class EnhancedStockAnalysisFlow(Flow[StockData]):
         crew = Crew(agents=[self.report_writer], tasks=[report_task])
         result = crew.kickoff()
         
+        # Remove markdown code blocks if present
+        result.raw = result.raw.strip()
+        if result.raw.startswith("```markdown"):
+            result.raw = result.raw[len("```markdown"):].strip()
+        if result.raw.startswith("```"):
+            result.raw = result.raw[len("```"):].strip()
+        if result.raw.endswith("```"):
+            result.raw = result.raw[:-3].strip()
         # Save the report
         filename = f"stock_analysis_{self.state.ticker}_{datetime.now().strftime('%Y%m%d')}.md"
         with open(filename, "w") as f:
