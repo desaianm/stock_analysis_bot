@@ -1,16 +1,27 @@
+import asyncio
 from dataclasses import Field
+import io
+import json
+import os
 from crewai import Task
 from textwrap import dedent
 from typing import List
 from pydantic import BaseModel
-from datetime import datetime   
+from datetime import datetime  
+from PIL import Image
 import pytz
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class CompanyDataOutput(BaseModel):
     ticker: str 
     company_name: str 
     company_info: str 
-
+    
+genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 class MarkdownReportCreationTasks:
     async def get_ny_time(self):
@@ -404,3 +415,82 @@ class MarkdownReportCreationTasks:
             expected_output="""Json output with given schema""",
             output_pydantic=CompanyDataOutput,
         )
+    
+
+async def update_portfolio(image: Image):
+    # Generate filename with proper extension
+    import os
+    
+    # Get original filename and extension
+    original_filename = getattr(image, 'filename', 'temp_image.png')
+    file_ext = os.path.splitext(original_filename)[1] or '.png'  # Default to .png if no extension
+    local_filename = f"temp_{os.urandom(4).hex()}{file_ext}"
+    
+    try:
+        # Save the image locally
+        image.save(local_filename)
+        print(f"Image saved locally as: {local_filename}")
+        
+        # Upload the file and print a confirmation
+        sample_file = genai.upload_file(path=local_filename,
+                                    display_name="receipt")
+
+        print(f"Uploaded file '{sample_file.display_name}' as: {sample_file.uri}")
+
+        file = genai.get_file(name=sample_file.name)
+        print(f"Retrieved file '{file.display_name}' as: {sample_file.uri}")
+
+        with open("portfolio.json", "r") as f:
+            portfolio_schema = json.load(f)
+            
+        prompt = f"""
+        Follow the instructions strictly below:
+        1. First Read the image and convert it to a table.
+        2. Now Convert the table to match the schema of the portfolio.json file.
+        portfolio.json : {portfolio_schema}
+
+        Output Only Json and nothing else.
+        Don't use ``` or any other chars just response starting with curly braces and ending with curly braces.
+        """
+        response = model.generate_content([sample_file, prompt])
+
+        
+        try:
+            # Remove JSON code block markers if present
+            cleaned_text = response.text.strip()
+            if cleaned_text.startswith("```json"):
+                cleaned_text = cleaned_text[7:]  # Remove ```json prefix
+            if cleaned_text.startswith("```"):
+                cleaned_text = cleaned_text[3:]  # Remove ``` prefix
+            if cleaned_text.endswith("```"):
+                cleaned_text = cleaned_text[:-3]  # Remove ``` suffix
+            final_text = cleaned_text.strip()
+            portfolio_data = json.loads(final_text)
+            
+            if isinstance(portfolio_data, dict):
+                with open("portfolio.json", "w") as f:
+                    json.dump(portfolio_data, f, indent=4)
+                message = "Portfolio successfully updated!"
+            else:
+                message = "Error: Response was valid JSON but not a dictionary format"
+                
+        except json.JSONDecodeError:
+            message = "Error: Response was not valid JSON format"
+            
+    finally:
+        # Clean up temporary file
+        if os.path.exists(local_filename):
+            os.remove(local_filename)
+            
+    return message
+
+
+async def main():
+    with open("screen.png", "rb") as f:
+        image = Image.open(f)
+        message = await update_portfolio(image)
+        print(message)
+    
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,21 +1,36 @@
 {
-  "holdings": [
-    {
-      "symbol": "NVDA",
-      "shares": 5,
-      "total_value": 709.90
-    },
-    {
-      "symbol": "AMD",
-      "shares": 0.3,
-      "total_value": 53.89
-    },
-    {
-      "symbol": "ACHR", 
-      "shares": 121.44,
-      "total_value": 499.74
-    }
-  ],
-  "total_portfolio_value": 1959.00,
-  "last_updated": "2024-01-17T12:00:00Z"
+    "holdings": [
+        {
+            "symbol": "ACHR",
+            "shares": 121.4429,
+            "total_value": 732.3
+        },
+        {
+            "symbol": "CCL",
+            "shares": 10,
+            "total_value": 248.8
+        },
+        {
+            "symbol": "GNW",
+            "shares": 40,
+            "total_value": 310.6
+        },
+        {
+            "symbol": "JOBY",
+            "shares": 48,
+            "total_value": 340.08
+        },
+        {
+            "symbol": "NIO",
+            "shares": 20,
+            "total_value": 97.0
+        },
+        {
+            "symbol": "NVDA",
+            "shares": 5,
+            "total_value": 709.75
+        }
+    ],
+    "total_portfolio_value": 2438.53,
+    "last_updated": "2024-01-17T12:00:00Z"
 }

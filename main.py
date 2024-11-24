@@ -1,8 +1,10 @@
 import asyncio
+import json
 import traceback
 
 from crewai import Crew
 from agents import FinancialResearchAgents
+from portfolio_crew import PortfolioAnalysisCrew
 from stock_recomendation_flow import Top20StocksFlow, InvestmentPreferences
 from stock_under import UndervaluedAnalysisFlow, ValueScreeningPreferences
 import discord
@@ -13,8 +15,9 @@ from pathlib import Path
 from datetime import datetime
 from discord import app_commands
 from flow import EnhancedStockAnalysisFlow
-from tasks import MarkdownReportCreationTasks
+from tasks import MarkdownReportCreationTasks, update_portfolio
 from tools import CompanyInfoTool
+
 
 
 load_dotenv()
@@ -116,6 +119,39 @@ async def get_top_20(interaction: discord.Interaction):
         await interaction.followup.send("An error occurred while processing your request.")
         print(f"Error in top20 command: {e}")
 
+
+@bot.tree.command(name="portfolio", description="Get portfolio analysis")
+async def get_portfolio(interaction: discord.Interaction):
+    """Get portfolio analysis"""
+    await interaction.response.defer()
+    await interaction.followup.send("Analyzing portfolio... Please wait.")
+    try:
+        # Load portfolio data
+        with open("portfolio.json", "r") as f:
+            portfolio_data = json.load(f)
+
+        # Create and run portfolio analysis
+        analyzer = PortfolioAnalysisCrew()
+        analysis_report = analyzer.analyze_portfolio(portfolio_data)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_file = REPORTS_DIR / f"portfolio_analysis_{timestamp}.md"
+        
+        with open(report_file, "w", encoding='utf-8') as f:
+            f.write(analysis_report)
+            
+        await interaction.followup.send(
+            "Analysis complete! Here's your portfolio report:",
+            file=discord.File(report_file)
+        )
+        
+        # Remove the file after sending
+        report_file.unlink()
+        
+    except Exception as e:
+        await interaction.followup.send("An error occurred while analyzing the portfolio.")
+        print(f"Error in portfolio command: {e}")
+
 @bot.tree.command(name="undervalued", description="Get undervalued stock analysis")
 async def get_undervalued(interaction: discord.Interaction):
     """Get undervalued stock analysis"""
@@ -203,7 +239,18 @@ async def on_message(message):
         return
     print(f"Received message: {message.content}")
 
+    if message.content.startswith("/update_portfolio"):
+        if message.attachments:
+            for attachment in message.attachments:
+                if attachment.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    message_content = await update_portfolio(attachment)
 
+                    await message.channel.send(message_content)
+                    break
+            else:
+                await message.channel.send("Please attach a valid image file (PNG, JPG, JPEG, or GIF).")
+        else:
+            await message.channel.send("Please attach an image with your portfolio update.")
     
     await bot.process_commands(message)
 
