@@ -421,14 +421,19 @@ async def update_portfolio(image: Image):
     # Generate filename with proper extension
     import os
     
-    # Get original filename and extension
-    original_filename = getattr(image, 'filename', 'temp_image.png')
-    file_ext = os.path.splitext(original_filename)[1] or '.png'  # Default to .png if no extension
-    local_filename = f"temp_{os.urandom(4).hex()}{file_ext}"
+    file_bytes = io.BytesIO(await image.read())
     
     try:
         # Save the image locally
-        image.save(local_filename)
+        # Convert bytes to PIL Image
+        pil_image = Image.open(file_bytes)
+        
+        # Generate unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        local_filename = f"temp_portfolio_{timestamp}.png"
+        
+        # Save PIL image
+        pil_image.save(local_filename)
         print(f"Image saved locally as: {local_filename}")
         
         # Upload the file and print a confirmation
