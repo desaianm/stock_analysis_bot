@@ -297,6 +297,16 @@ if __name__ == "__main__":
     # Create and run portfolio analysis
     analyzer = PortfolioAnalysisCrew()
     analysis_report = analyzer.analyze_portfolio(sample_portfolio)
+
+    # Clean up markdown code block markers if present
+    analysis_report = analysis_report.strip()
+    if analysis_report.startswith("```md"):
+        analysis_report = analysis_report[5:]  # Remove ```md prefix
+    if analysis_report.startswith("```"):
+        analysis_report = analysis_report[3:]  # Remove ``` prefix
+    if analysis_report.endswith("```"):
+        analysis_report = analysis_report[:-3]  # Remove ``` suffix
+    analysis_report = analysis_report.strip()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     with open(f"outputs/portfolio_analysis_{timestamp}.md", "w") as f:
         f.write(analysis_report)
