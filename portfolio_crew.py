@@ -300,8 +300,8 @@ if __name__ == "__main__":
 
     # Clean up markdown code block markers if present
     analysis_report = analysis_report.strip()
-    if analysis_report.startswith("```md"):
-        analysis_report = analysis_report[5:]  # Remove ```md prefix
+    if analysis_report.startswith("```markdown"):
+        analysis_report = analysis_report[12:]  # Remove ```markdown prefix
     if analysis_report.startswith("```"):
         analysis_report = analysis_report[3:]  # Remove ``` prefix
     if analysis_report.endswith("```"):
