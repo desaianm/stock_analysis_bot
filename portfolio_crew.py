@@ -273,7 +273,8 @@ class PortfolioAnalysisCrew:
             ],
             tasks=self.create_tasks(portfolio_data),
             process=Process.sequential,
-            verbose=True
+            verbose=True,
+            memory=True
         )
 
         # Execute analysis

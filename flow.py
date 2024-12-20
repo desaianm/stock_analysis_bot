@@ -157,7 +157,7 @@ class EnhancedStockAnalysisFlow(Flow[StockData]):
             expected_output="json in given schema",
             output_pydantic=StockData
         )
-        crew = Crew(agents=[self.researcher], tasks=[research_task])
+        crew = Crew(agents=[self.researcher], tasks=[research_task],verbose=True,memory=True)
         result = crew.kickoff()
         
         # Parse and structure the results
@@ -182,7 +182,7 @@ class EnhancedStockAnalysisFlow(Flow[StockData]):
             agent=self.technical_analyst,
             expected_output="A Report in markdown format"
         )
-        crew = Crew(agents=[self.technical_analyst], tasks=[technical_task])
+        crew = Crew(agents=[self.technical_analyst], tasks=[technical_task],verbose=True,memory=True)
         result = crew.kickoff()
         
         self.state.technical_analysis = {
@@ -203,7 +203,7 @@ class EnhancedStockAnalysisFlow(Flow[StockData]):
             agent=self.fundamental_analyst,
             expected_output="A Report in markdown format"
         )
-        crew = Crew(agents=[self.fundamental_analyst], tasks=[fundamental_task])
+        crew = Crew(agents=[self.fundamental_analyst], tasks=[fundamental_task],verbose=True,memory=True)
         result = crew.kickoff()
         
         self.state.financial_metrics = {
@@ -224,7 +224,7 @@ class EnhancedStockAnalysisFlow(Flow[StockData]):
             agent=self.market_sentiment_analyst,
             expected_output="A Report in markdown format"
         )
-        crew = Crew(agents=[self.market_sentiment_analyst], tasks=[sentiment_task])
+        crew = Crew(agents=[self.market_sentiment_analyst], tasks=[sentiment_task],verbose=True,memory=True)
         result = crew.kickoff()
         
         self.state.sentiment_data = {
@@ -308,7 +308,7 @@ class EnhancedStockAnalysisFlow(Flow[StockData]):
             agent=self.report_writer,
             expected_output="A detailed report in markdown format"
         )
-        crew = Crew(agents=[self.report_writer], tasks=[report_task])
+        crew = Crew(agents=[self.report_writer], tasks=[report_task],verbose=True,memory=True)
         result = crew.kickoff()
         
         # Remove markdown code blocks if present

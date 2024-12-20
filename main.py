@@ -75,8 +75,8 @@ async def company_lookup(company_name):
         crew = Crew(
             agents=[company_lookup_agent], 
             tasks=[company_lookup_task],
-            verbose=False,
-            memory=False
+            verbose=True,
+            memory=True
         )
         result = await crew.kickoff_async()
         company_data = result.to_dict()

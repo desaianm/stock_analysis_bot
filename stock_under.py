@@ -274,7 +274,8 @@ class UndervaluedAnalysisFlow:
             agents=[self.value_screener],
             tasks=[self.screening_task],
             process=Process.sequential,
-            verbose=True
+            verbose=True,
+            memory=True
         )
         screening_result = await screening_crew.kickoff_async()
         
@@ -291,7 +292,8 @@ class UndervaluedAnalysisFlow:
             agents=[self.turnaround_analyst],
             tasks=[self.turnaround_task],
             process=Process.sequential,
-            verbose=True
+            verbose=True,
+            memory=True
         )
         turnaround_result = await turnaround_crew.kickoff_async()
         

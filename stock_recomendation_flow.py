@@ -285,7 +285,8 @@ class Top20StocksFlow:
             agents=[self.screening_agent],
             tasks=[self.screening_task],
             process=Process.sequential,
-            verbose=True
+            verbose=True,
+            memory=True
         )
         screening_result = await screening_crew.kickoff_async()
         self.state.initial_candidates = screening_result.raw
@@ -295,7 +296,8 @@ class Top20StocksFlow:
             agents=[self.sector_agent],
             tasks=[self.sector_task],
             process=Process.sequential,
-            verbose=True
+            verbose=True,
+            memory=True
         )
         sector_result = await sector_crew.kickoff_async()
         self.state.sector_allocations = sector_result.raw
@@ -305,7 +307,8 @@ class Top20StocksFlow:
             agents=[self.tournament_agent],
             tasks=[self.tournament_task],
             process=Process.sequential,
-            verbose=True
+            verbose=True,
+            memory=True
         )
         tournament_result = await tournament_crew.kickoff_async()
         self.state.tournament_results = tournament_result.raw
@@ -335,7 +338,8 @@ class Top20StocksFlow:
             agents=[self.portfolio_agent],
             tasks=[optimization_task],
             process=Process.sequential,
-            verbose=True
+            verbose=True,
+            memory=True
         )
         optimization_result = await optimization_crew.kickoff_async()
         
@@ -364,7 +368,8 @@ class Top20StocksFlow:
             agents=[self.validation_agent],
             tasks=[validation_task],
             process=Process.sequential,
-            verbose=True
+            verbose=True,
+            memory=True
         )
         
         final_result = await validation_crew.kickoff_async()
