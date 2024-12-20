@@ -93,7 +93,7 @@ class UndervaluedAnalysisFlow:
                 FinancialReportTool(),
                 RealTimeQuoteTool()
             ],
-            llm = claude_llm,
+            # llm = claude_llm,
             
         )
 
@@ -110,7 +110,7 @@ class UndervaluedAnalysisFlow:
                 StockNewsTool(),
                 FinancialReportTool()
             ],
-            llm = claude_llm
+            # llm = claude_llm
         )
 
         # Insider Activity Analyst
@@ -126,7 +126,7 @@ class UndervaluedAnalysisFlow:
                 SerperDevTool(),
                 TavilySearchTool()
             ],
-            llm = claude_llm
+            # llm = claude_llm
         )
 
         # Technical Analysis Agent
@@ -142,7 +142,7 @@ class UndervaluedAnalysisFlow:
                 ChartingTool(),
                 OptionsChainTool()
             ],
-            llm = claude_llm
+            # llm = claude_llm
         )
 
     def setup_tasks(self):
