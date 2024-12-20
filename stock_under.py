@@ -30,12 +30,11 @@ import pytz
 
 ny_timezone = pytz.timezone('America/New_York')
 
-claude =  LLM(
-                model="anthropic/claude-3-5-sonnet-20240620",
-                api_key=os.getenv("ANTHROPIC_API_KEY"),
-                max_tokens=8000,
-                temperature=1
-            )
+claude_llm =  LLM(
+            model="anthropic/claude-3-5-sonnet-20241022",
+            temperature=0.8,
+            max_tokens=8192
+        )
 
 class UndervaluedMetrics(BaseModel):
     current_price: float
@@ -75,6 +74,7 @@ class UndervaluedAnalysisFlow:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.setup_agents()
         self.setup_tasks()
+        
 
     def setup_agents(self):
         """Initialize specialized agents for finding undervalued stocks"""
@@ -93,7 +93,8 @@ class UndervaluedAnalysisFlow:
                 FinancialReportTool(),
                 RealTimeQuoteTool()
             ],
-            llm = claude
+            llm = claude_llm,
+            
         )
 
         # Turnaround Analysis Agent
@@ -109,7 +110,7 @@ class UndervaluedAnalysisFlow:
                 StockNewsTool(),
                 FinancialReportTool()
             ],
-            llm = claude
+            llm = claude_llm
         )
 
         # Insider Activity Analyst
@@ -125,7 +126,7 @@ class UndervaluedAnalysisFlow:
                 SerperDevTool(),
                 TavilySearchTool()
             ],
-            llm = claude
+            llm = claude_llm
         )
 
         # Technical Analysis Agent
@@ -141,7 +142,7 @@ class UndervaluedAnalysisFlow:
                 ChartingTool(),
                 OptionsChainTool()
             ],
-            llm = claude
+            llm = claude_llm
         )
 
     def setup_tasks(self):
