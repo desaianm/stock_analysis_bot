@@ -1,4 +1,4 @@
-myenv/
+venv/
 .env
 outputs/
 repopack-output.txt

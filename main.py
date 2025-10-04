@@ -3,10 +3,10 @@ import json
 import traceback
 
 from crewai import Crew
-from agents import FinancialResearchAgents
-from portfolio_crew import PortfolioAnalysisCrew
-from stock_recomendation_flow import Top20StocksFlow, InvestmentPreferences
-from stock_under import UndervaluedAnalysisFlow, ValueScreeningPreferences
+from stockbot.agents.financial import FinancialResearchAgents
+from stockbot.portfolio.analysis import PortfolioAnalysisCrew
+from stockbot.flows.recommendations import Top20StocksFlow, InvestmentPreferences
+from stockbot.flows.undervalued import UndervaluedAnalysisFlow, ValueScreeningPreferences
 import discord
 from discord.ext import commands
 import os
@@ -14,9 +14,9 @@ from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime
 from discord import app_commands
-from flow import EnhancedStockAnalysisFlow
-from tasks import MarkdownReportCreationTasks, update_portfolio
-from tools import CompanyInfoTool
+from stockbot.flows.single_stock import EnhancedStockAnalysisFlow
+from stockbot.tasks.workflows import MarkdownReportCreationTasks, update_portfolio
+from stockbot.tools.data import CompanyInfoTool
 
 
 
@@ -268,7 +268,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
 
 

@@ -31,13 +31,12 @@ A sophisticated Discord bot powered by AI agents for comprehensive stock market 
 
 ## Project Structure
 
-- `main.py` - Main Discord bot implementation and command handlers
-- `agents.py` - AI agent definitions and configurations
-- `tasks.py` - Task definitions for AI agents
-- `tools.py` - Custom tools for financial analysis and data retrieval
-- `flow.py` - Analysis workflow definitions
-- `stock_recomendation_flow.py` - Top 20 stocks analysis implementation
-- `stock_under.py` - Undervalued stocks analysis implementation
+- `main.py` – Discord bot entrypoint and slash-command handlers.
+- `stockbot/flows/` – CrewAI orchestration modules (`single_stock.py`, `recommendations.py`, `undervalued.py`).
+- `stockbot/agents/financial.py` – Reusable agent factories for lookup/reporting tasks.
+- `stockbot/portfolio/analysis.py` – Portfolio Crew orchestration used by the `/portfolio` command.
+- `stockbot/tools/data.py` – QuickFS, market-data, charting, and markdown helper tools.
+- `stockbot/tasks/workflows.py` – Company lookup task builder and portfolio image ingestion helper.
 
 ## Commands
 
@@ -74,4 +73,21 @@ MIT License
 
 Copyright (c) 2024
 
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
