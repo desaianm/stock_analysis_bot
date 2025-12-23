@@ -17,3 +17,11 @@ scipy
 quickfs
 matplotlib
 yfinance
+agno 
+anthropic 
+mcp 
+'fastapi[standard]' 
+sqlalchemy
+exa-py
+tiktoken
+asyncpraw

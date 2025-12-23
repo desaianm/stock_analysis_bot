@@ -1,19 +1,16 @@
 import base64
 import os
-import json
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from quickfs import QuickFS
-from langchain.tools import tool
 from pydantic import BaseModel, Field
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Type
 from langchain_community.tools import TavilySearchResults
 import random
 import matplotlib.pyplot as plt
 from crewai.tools import BaseTool
 from langchain_core.messages import HumanMessage
 from datetime import datetime
-from crewai.tools import tool
 load_dotenv()
 
 tavily_search = TavilySearchResults(max_results=10,
@@ -79,10 +76,7 @@ class DataFetchingTool(BaseTool):
         try:
             return client.get_data_range(symbol=f"{symbol}:US", metric=metric, period="FY-9:FY")
         except Exception as exc:  # pragma: no cover - depends on external API
-            return {
-                "error": f"QuickFS request failed: {exc}",
-                "fallback": _fallback_financial_data(symbol, metric),
-            }
+            raise RuntimeError(f"QuickFS request failed: {exc}") from exc
 
 class CreateChartInput(BaseModel):
     metric: str
@@ -119,6 +113,8 @@ class ChartingTool(BaseTool):
     def _run(self, metric_name: str, data: List) -> CreateChartOutput:
         years = list(range(len(data)))
         bar_color = f'#{random.randint(0, 0xFFFFFF):06x}'
+
+        os.makedirs("plots", exist_ok=True)
         
         plt.figure(figsize=(10, 6))  # Create a new figure
         plt.bar(years, data, color=bar_color)
@@ -185,10 +181,7 @@ class FinancialReportTool(BaseTool):
         try:
             return client.get_data_full(symbol)
         except Exception as exc:  # pragma: no cover - depends on external API
-            return {
-                "error": f"QuickFS request failed: {exc}",
-                "fallback": _fallback_financial_data(symbol),
-            }
+            raise RuntimeError(f"QuickFS request failed: {exc}") from exc
     
 class ChatAnalysisToolInput(BaseModel):
     """Input schema for ChatAnalysisTool."""
@@ -271,48 +264,9 @@ class ChatAnalysisTool(BaseTool):
         return response.content
 
 
-from crewai.tools.base_tool import BaseTool
 import yfinance as yf
 import os
 
-
-def _fallback_financial_data(symbol: str, metric: Optional[str] = None) -> Dict[str, object]:
-    """Provide a graceful fallback when QuickFS data cannot be retrieved."""
-
-    query_parts = [symbol, "latest financial metrics"]
-    if metric:
-        query_parts.insert(1, metric)
-
-    query = " ".join(query_parts)
-    fallback: Dict[str, object] = {
-        "source": "fallback",
-        "query": query,
-    }
-
-    try:
-        search_results = tavily_search.run(query)
-        fallback["web_results"] = search_results
-    except Exception as search_error:  # pragma: no cover - depends on external service
-        fallback["web_search_error"] = str(search_error)
-        search_results = None
-
-    if search_results:
-        try:
-            llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro-002")
-            summary_prompt = (
-                "You are assisting a financial analyst who cannot access QuickFS right now. "
-                "Summarize any concrete numerical metrics you can extract from the "
-                f"following web search results about {symbol}{' ' + metric if metric else ''}. "
-                "Return bullet points with metric name, value, reporting period, and a source URL when available. "
-                "If no reliable figures are present, say so explicitly.\n\n"
-                f"Results:\n{search_results}"
-            )
-            summary_response = llm.invoke(summary_prompt)
-            fallback["llm_summary"] = getattr(summary_response, "content", str(summary_response))
-        except Exception as llm_error:  # pragma: no cover - depends on LLM credentials
-            fallback["llm_error"] = str(llm_error)
-
-    return fallback
 
 class StockPriceDataToolInput(BaseModel):
     """Input schema for StockPriceDataTool."""
@@ -455,8 +409,19 @@ class StockNewsTool(BaseTool):
 
     def _run(self, symbol: str) -> List:
         stock = yf.Ticker(symbol)
-        news = stock.news
-        return [item['title'] for item in news[:5]]  # Get the 5 most recent headlines
+        news_items = stock.news or []
+        titles: List[str] = []
+
+        for item in news_items[:5]:
+            title = None
+            if isinstance(item, dict):
+                title = item.get("title") or item.get("headline")
+            if not title and item:
+                title = str(item)
+            if title:
+                titles.append(title)
+
+        return titles
 
 class CompanyInfoToolInput(BaseModel):
     """Input schema for CompanyInfoTool."""
@@ -499,3 +464,21 @@ class CompanyInfoTool(BaseTool):
 
 #     def _run(self, company_name: str) -> str:
 #         return yf.Ticker.search(company_name)
+
+
+class WebSearchTool():
+
+    def run(self, query: str) -> str:
+        from exa_py import Exa
+
+        exa = Exa(api_key = os.getenv("EXA_API_KEY"))
+        try:
+            result = exa.search_and_contents(
+            query,
+            text = True,
+            type = "auto"
+            )
+        except Exception as exc:
+            return self._format_error("web_search_tool", query=query, error=str(exc))
+        return result
+    

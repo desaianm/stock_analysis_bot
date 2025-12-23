@@ -6,3 +6,4 @@ __pycache__/
 agentops.log
 node_modules/
 *.md
+agno.db

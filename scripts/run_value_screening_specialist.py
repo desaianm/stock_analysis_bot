@@ -15,8 +15,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:  # pragma: no branch - deterministic insert
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from crewai import Crew, Process
-
 from stockbot.flows.undervalued import (
     UndervaluedAnalysisFlow,
     ValueScreeningPreferences,
@@ -46,11 +44,6 @@ def _parse_args() -> argparse.Namespace:
         help="Maximum decline from 52-week high (fraction)",
     )
     parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable verbose CrewAI logging",
-    )
-    parser.add_argument(
         "--json",
         action="store_true",
         help="Print raw agent output as JSON (falls back to plain text if serialization fails)",
@@ -73,21 +66,12 @@ def _build_preferences(args: argparse.Namespace) -> ValueScreeningPreferences:
 
 async def _run_value_screening(
     preferences: ValueScreeningPreferences,
-    *,
-    verbose: bool,
 ) -> Dict[str, Any]:
     flow = UndervaluedAnalysisFlow(preferences)
-    screening_crew = Crew(
-        agents=[flow.value_screener],
-        tasks=[flow.screening_task],
-        process=Process.sequential,
-        verbose=verbose,
-        memory=True,
-    )
-    result = await screening_crew.kickoff_async()
+    result = await flow.run_value_screening()
     return {
         "preferences": preferences.model_dump(),
-        "raw_output": result.raw,
+        "raw_output": result,
     }
 
 
@@ -98,7 +82,7 @@ def main() -> None:
     preferences = _build_preferences(args)
 
     try:
-        outcome = asyncio.run(_run_value_screening(preferences, verbose=args.verbose))
+        outcome = asyncio.run(_run_value_screening(preferences))
     except Exception as exc:  # noqa: BLE001 - surface stack for diagnostics
         print("Value Screening Specialist failed:\n")
         raise
