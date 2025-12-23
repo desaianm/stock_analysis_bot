@@ -37,6 +37,14 @@ from stockbot.tools.data import (
 ny_timezone = pytz.timezone("America/New_York")
 
 
+def load_prompt(prompt_name: str) -> str:
+    """Load a prompt template from the prompts directory."""
+    prompt_path = Path(__file__).parent.parent.parent / "prompts" / "undervalued" / f"{prompt_name}.txt"
+    if not prompt_path.exists():
+        raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
+    return prompt_path.read_text(encoding="utf-8")
+
+
 class UndervaluedMetrics(BaseModel):
     current_price: float
     fifty_two_week_high: float
@@ -119,14 +127,11 @@ class UndervaluedAnalysisFlow:
             max_completion_tokens=10000,
         )
 
+        screening_instructions = load_prompt("screening_agent_instructions").strip().split('\n')
         self.screening_agent = Agent(
             name="Value Screening Specialist",
             model=shared_model,
-            instructions=[
-                "You identify fundamentally strong but underpriced US equities.",
-                "Always call the available Python functions to gather real-time prices, filings, and news before forming conclusions.",
-                "Return polished markdown with clear sections, bullet points, and timestamps for every metric.",
-            ],
+            instructions=screening_instructions,
             tools=shared_tools,
             markdown=True,
             add_datetime_to_context=True,
@@ -134,14 +139,11 @@ class UndervaluedAnalysisFlow:
             debug_mode=True,
         )
 
+        turnaround_instructions = load_prompt("turnaround_agent_instructions").strip().split('\n')
         self.turnaround_agent = Agent(
             name="Turnaround Potential Analyst",
             model=shared_model,
-            instructions=[
-                "You analyze catalysts, turnaround probability, and execution milestones for value opportunities.",
-                "Use the callable helpers to refresh quotes, news, and filings while evaluating each candidate.",
-                "Reference the provided screening summary, expand on catalysts, and outline monitoring plans in markdown.",
-            ],
+            instructions=turnaround_instructions,
             tools=shared_tools,
             markdown=True,
             add_datetime_to_context=True,
@@ -149,15 +151,11 @@ class UndervaluedAnalysisFlow:
             debug_mode=True,
         )
 
+        reddit_instructions = load_prompt("reddit_sentiment_agent_instructions").strip().split('\n')
         self.reddit_sentiment_agent = Agent(
             name="BayStreet Reddit Scout",
             model=OpenAIChat(id="gpt-4.1", temperature=1, max_completion_tokens=5000),
-            instructions=[
-                "You specialize in parsing Reddit chatter about TSX and penny stocks.",
-                "Use the reddit_sentiment_scan tool to pull the latest Baystreetbets (priority) and Wallstreetbets posts.",
-                "Analyze tone, catalysts, and risks directly from the raw comments—do not rely on heuristics.",
-                "Summarize findings in markdown with clear sentiment read-through and cite subreddit sources.",
-            ],
+            instructions=reddit_instructions,
             tools=[self.reddit_sentiment_scan],
             markdown=True,
             add_datetime_to_context=True,
@@ -482,18 +480,8 @@ class UndervaluedAnalysisFlow:
 
     async def run_reddit_sentiment_analysis(self, ticker: str) -> str:
         """Execute the BayStreet-focused Reddit sentiment agent."""
-        prompt = f"""Use the reddit_sentiment_scan tool to pull the latest chatter about {ticker.upper()}.
-
-Prioritize r/Baystreetbets discussions (TSX & penny stock focus) while also acknowledging r/wallstreetbets mentions.
-
-Summarize in markdown:
-1. Overall sentiment (bullish/bearish/mixed) with supporting quotes.
-2. Key catalysts, rumors, or corporate events mentioned.
-3. Notable posters or repeated narratives driving hype.
-4. Risk factors or skepticism raised by the community.
-5. cite sources for your claims and post links in the .md file.
-
-Close with a quick risk score (Low/Medium/High) based on the tone of posts."""
+        template = load_prompt("reddit_sentiment_prompt")
+        prompt = template.format(ticker=ticker.upper())
         result = await self.reddit_sentiment_agent.arun(prompt)
         return self._extract_content(result)
 
@@ -719,100 +707,33 @@ Close with a quick risk score (Low/Medium/High) based on the tone of posts."""
         """Generate the detailed screening instructions for the agent."""
         now = datetime.now(ny_timezone).strftime("%Y-%m-%d %H:%M:%S")
         prefs = self.preferences
+
         reddit_section = ""
         if reddit_summary:
             reddit_section = f"\n\n## PRIORITY INTELLIGENCE: Recent Reddit Community Insights\n{reddit_summary}\n\n**CRITICAL**: Prioritize TSX-listed stocks and Canadian equities mentioned in r/Baystreetbets. These community-identified opportunities should be thoroughly investigated first, as they represent emerging value plays with potential retail momentum. Cross-reference Reddit catalysts with fundamental data to validate investment thesis.\n"
-        return f"""You are preparing a comprehensive value screening briefing with emphasis on TSX and Canadian market opportunities.
-Current Time: {now}{reddit_section}
 
-## PRIMARY SCREENING DIRECTIVE
-
-**Priority 1 (HIGHEST)**: TSX stocks and Canadian equities discussed on r/Baystreetbets
-- Investigate ALL tickers mentioned with positive sentiment or catalyst discussions
-- Validate Reddit claims against real-time financial data
-- Assess retail momentum potential alongside fundamental metrics
-- TSX stocks meeting criteria should be ranked higher than US equivalents
-
-**Priority 2**: US undervalued stocks matching quantitative criteria
-
-## Screening Criteria
-
-Price constraints (real-time verification required):
-- Max price: ${prefs.max_price:.2f}
-- Min price: ${prefs.min_price:.2f}
-- Minimum 10-day avg volume: {prefs.min_volume:,.0f}
-- Maximum drawdown from 52-week high: {prefs.price_vs_high * 100:.0f}%
-
-Fundamental thresholds (latest quarterly data):
-- Max P/E: {prefs.max_pe:.1f}
-- Min market cap: ${prefs.min_market_cap:,.0f}
-- Min current ratio: {prefs.min_current_ratio:.2f}
-- Max debt/equity: {prefs.max_debt_equity:.2f}
-
-## Enhanced Analysis Framework
-
-For each candidate (prioritize TSX stocks first):
-
-1. **Reddit Community Validation** (if applicable):
-   - Cross-check mentioned catalysts with official sources
-   - Assess sentiment quality (informed analysis vs hype)
-   - Identify unique insights missed by institutional analysts
-   - Note: TSX stocks with strong community backing receive +15% confidence boost
-
-2. **Balance Sheet Strength**:
-   - Cash vs liabilities, debt maturities, working capital trends
-   - Currency exposure for Canadian stocks
-   - Cross-border revenue streams
-
-3. **Business Health Indicators**:
-   - Gross margin trajectory, operating cash flow
-   - Market share dynamics, revenue concentration
-   - Sector positioning (especially resource/energy for TSX)
-
-4. **Management & Governance**:
-   - Executive changes, strategic updates, capital allocation
-   - Insider ownership and recent buying activity
-   - Canadian regulatory environment considerations
-
-5. **Competitive & Market Position**:
-   - Market standing relative to peers (TSX vs broader market)
-   - Competitive dynamics, near-term opportunities
-   - Exchange rate impact on valuation
-
-## Required Deliverables (Per Candidate)
-
-1. **Priority Flag**: TSX/Canadian stock? Reddit-sourced? (prominently mark)
-2. **Timestamped Metrics**: Real-time quotes, fundamentals, valuation multiples
-3. **Reddit Catalyst Verification**: If mentioned, validate claims with data
-4. **Key Strengths**: 3-5 compelling points with source dates
-5. **Risk Assessment**: Downside scenarios with timing/context
-6. **Catalyst Timeline**: Expected triggers with dates
-7. **Upside Case**: >50% 12-month potential path with assumptions
-8. **Confidence Score**: 1-10 (add +1.5 for TSX stocks with Reddit validation)
-
-Call the available Python functions to pull the freshest data before forming conclusions.
-Return a markdown report with TSX/Canadian stocks ranked first, followed by US opportunities.
-"""
+        template = load_prompt("screening_prompt")
+        return template.format(
+            timestamp=now,
+            reddit_section=reddit_section,
+            max_price=f"{prefs.max_price:.2f}",
+            min_price=f"{prefs.min_price:.2f}",
+            min_volume=f"{prefs.min_volume:,.0f}",
+            price_vs_high_pct=f"{prefs.price_vs_high * 100:.0f}",
+            max_pe=f"{prefs.max_pe:.1f}",
+            min_market_cap=f"{prefs.min_market_cap:,.0f}",
+            min_current_ratio=f"{prefs.min_current_ratio:.2f}",
+            max_debt_equity=f"{prefs.max_debt_equity:.2f}"
+        )
 
     def _build_turnaround_prompt(self, screening_summary: str) -> str:
         """Build the second-phase prompt referencing screening output."""
         now = datetime.now(ny_timezone).strftime("%Y-%m-%d %H:%M:%S")
-        return f"""You already produced the following screening summary:
-{screening_summary}
-
-Now perform a turnaround and catalyst deep dive for each highlighted ticker.
-Current Time: {now}
-
-Requirements:
-1. Compare current metrics with 2019 baselines and post-COVID recovery paths.
-2. Map catalyst timelines for the next 12 months (earnings, product launches, regulatory events, etc.).
-3. Evaluate quarter-over-quarter and year-over-year progress for revenue, margins, cash flow, and leverage.
-4. Assess industry positioning, competitive responses, and macro sensitivities.
-5. Calculate a turnaround probability score, required proof points, and monitoring plan.
-
-Use the callable methods to refresh news, search for strategic updates, and pull any data not captured previously.
-Output a markdown dossier for each ticker plus an overall playbook that includes risk controls and position sizing guidance.
-"""
+        template = load_prompt("turnaround_prompt")
+        return template.format(
+            screening_summary=screening_summary,
+            timestamp=now
+        )
 
     def create_final_report(self, screening_data: str, turnaround_data: str) -> str:
         """Combine both analysis stages into a unified report."""

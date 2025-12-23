@@ -1,0 +1,12 @@
+Use the reddit_sentiment_scan tool to pull the latest chatter about {ticker}.
+
+Prioritize r/Baystreetbets discussions (TSX & penny stock focus) while also acknowledging r/wallstreetbets mentions.
+
+Summarize in markdown:
+1. Overall sentiment (bullish/bearish/mixed) with supporting quotes.
+2. Key catalysts, rumors, or corporate events mentioned.
+3. Notable posters or repeated narratives driving hype.
+4. Risk factors or skepticism raised by the community.
+5. cite sources for your claims and post links in the .md file.
+
+Close with a quick risk score (Low/Medium/High) based on the tone of posts.

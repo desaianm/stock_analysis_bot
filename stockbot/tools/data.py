@@ -1,16 +1,21 @@
 import base64
 import os
+import warnings
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from quickfs import QuickFS
 from pydantic import BaseModel, Field
 from typing import Dict, List, Type
-from langchain_community.tools import TavilySearchResults
 import random
 import matplotlib.pyplot as plt
 from crewai.tools import BaseTool
 from langchain_core.messages import HumanMessage
 from datetime import datetime
+
+# Suppress LangChain deprecation warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain_community")
+from langchain_community.tools import TavilySearchResults
+
 load_dotenv()
 
 tavily_search = TavilySearchResults(max_results=10,

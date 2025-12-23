@@ -42,8 +42,8 @@ tavily_search_tool = TavilySearchTool()
 class FinancialResearchAgents:
     def __init__(self):
         self.openai_llm = LLM(
-            model="gpt-5",
-            temperature=0.8,
+            model="gpt-4.1",
+            temperature=1,
             base_url="https://api.openai.com/v1",
             api_key=oai_api_key,
         )

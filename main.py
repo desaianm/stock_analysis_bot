@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime
 from discord import app_commands
-from stockbot.flows.single_stock import EnhancedStockAnalysisFlow
+from stockbot.flows.single_stock import SingleStockAnalysisFlow
 from stockbot.tasks.workflows import MarkdownReportCreationTasks, update_portfolio
 from stockbot.tools.data import CompanyInfoTool
 
@@ -208,9 +208,9 @@ async def analyze_company(interaction: discord.Interaction, company_name: str):
             await interaction.followup.send(f"Error finding company symbol: {str(e)}")
             return
 
-        # Initialize and run the enhanced stock analysis flow
-        stock_flow = EnhancedStockAnalysisFlow()
-        result = await stock_flow.kickoff_async(inputs={"ticker": ticker})
+        # Initialize and run the stock analysis flow
+        stock_flow = SingleStockAnalysisFlow(ticker)
+        await stock_flow.execute_analysis()
 
         # Get the generated report filename
         report_file = f"stock_analysis_{ticker}_{datetime.now().strftime('%Y%m%d')}.md"

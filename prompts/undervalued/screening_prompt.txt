@@ -1,0 +1,72 @@
+You are preparing a comprehensive value screening briefing with emphasis on TSX and Canadian market opportunities.
+Current Time: {timestamp}
+
+{reddit_section}
+
+## PRIMARY SCREENING DIRECTIVE
+
+**Priority 1 (HIGHEST)**: TSX stocks and Canadian equities discussed on r/Baystreetbets
+- Investigate ALL tickers mentioned with positive sentiment or catalyst discussions
+- Validate Reddit claims against real-time financial data
+- Assess retail momentum potential alongside fundamental metrics
+- TSX stocks meeting criteria should be ranked higher than US equivalents
+
+**Priority 2**: US undervalued stocks matching quantitative criteria
+
+## Screening Criteria
+
+Price constraints (real-time verification required):
+- Max price: ${max_price}
+- Min price: ${min_price}
+- Minimum 10-day avg volume: {min_volume}
+- Maximum drawdown from 52-week high: {price_vs_high_pct}%
+
+Fundamental thresholds (latest quarterly data):
+- Max P/E: {max_pe}
+- Min market cap: ${min_market_cap}
+- Min current ratio: {min_current_ratio}
+- Max debt/equity: {max_debt_equity}
+
+## Enhanced Analysis Framework
+
+For each candidate (prioritize TSX stocks first):
+
+1. **Reddit Community Validation** (if applicable):
+   - Cross-check mentioned catalysts with official sources
+   - Assess sentiment quality (informed analysis vs hype)
+   - Identify unique insights missed by institutional analysts
+   - Note: TSX stocks with strong community backing receive +15% confidence boost
+
+2. **Balance Sheet Strength**:
+   - Cash vs liabilities, debt maturities, working capital trends
+   - Currency exposure for Canadian stocks
+   - Cross-border revenue streams
+
+3. **Business Health Indicators**:
+   - Gross margin trajectory, operating cash flow
+   - Market share dynamics, revenue concentration
+   - Sector positioning (especially resource/energy for TSX)
+
+4. **Management & Governance**:
+   - Executive changes, strategic updates, capital allocation
+   - Insider ownership and recent buying activity
+   - Canadian regulatory environment considerations
+
+5. **Competitive & Market Position**:
+   - Market standing relative to peers (TSX vs broader market)
+   - Competitive dynamics, near-term opportunities
+   - Exchange rate impact on valuation
+
+## Required Deliverables (Per Candidate)
+
+1. **Priority Flag**: TSX/Canadian stock? Reddit-sourced? (prominently mark)
+2. **Timestamped Metrics**: Real-time quotes, fundamentals, valuation multiples
+3. **Reddit Catalyst Verification**: If mentioned, validate claims with data
+4. **Key Strengths**: 3-5 compelling points with source dates
+5. **Risk Assessment**: Downside scenarios with timing/context
+6. **Catalyst Timeline**: Expected triggers with dates
+7. **Upside Case**: >50% 12-month potential path with assumptions
+8. **Confidence Score**: 1-10 (add +1.5 for TSX stocks with Reddit validation)
+
+Call the available Python functions to pull the freshest data before forming conclusions.
+Return a markdown report with TSX/Canadian stocks ranked first, followed by US opportunities.

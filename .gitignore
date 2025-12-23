@@ -6,4 +6,9 @@ __pycache__/
 agentops.log
 node_modules/
 *.md
+!prompts/**/*.md
+!prompts/**/*.txt
+!CLAUDE.md
+!README.md
+!AGENTS.md
 agno.db

@@ -1,0 +1,23 @@
+Analyze market sentiment for {ticker}:
+
+1. News & Media Sentiment
+   - Review recent news headlines and articles
+   - Identify key themes and narratives
+   - Assess media tone (bullish/bearish/neutral)
+
+2. Analyst Coverage
+   - Review analyst recommendations and price targets
+   - Identify consensus view and outliers
+   - Note recent rating changes and catalysts
+
+3. Market Positioning
+   - Check options market signals (put/call ratio, unusual activity)
+   - Review insider trading activity if available
+   - Assess retail vs institutional sentiment
+
+4. Sentiment Summary
+   - Overall sentiment score and direction
+   - Key drivers and risks mentioned
+   - Contrarian indicators or consensus extremes
+
+Expected Output: Detailed markdown report with sentiment analysis and supporting evidence

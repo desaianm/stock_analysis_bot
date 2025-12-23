@@ -1,0 +1,7 @@
+Research and gather the following information for {ticker}:
+1. Current stock price and basic company information
+2. Historical stock prices for the past 5 years
+3. Key financial metrics and ratios
+4. Recent company news and developments
+
+Expected Output: json in given schema

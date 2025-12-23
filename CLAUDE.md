@@ -1,0 +1,348 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+A Discord bot powered by AI agents (CrewAI and Agno frameworks) that provides comprehensive stock market analysis. The bot orchestrates multiple specialized agents working together to deliver investment recommendations, undervalued stock screening, portfolio analysis, and individual company research.
+
+## Architecture
+
+### Core Components
+
+- **main.py**: Discord bot entrypoint with slash command handlers (`/top20`, `/undervalued`, `/analyze`, `/portfolio`)
+- **stockbot/flows/**: Analysis orchestration modules using CrewAI/Agno flows
+  - `undervalued.py`: Agno-based undervalued stock screening with Reddit sentiment analysis
+  - `recommendations.py`: CrewAI tournament-based top 20 stock selection
+  - `single_stock.py`: Individual company deep-dive analysis
+- **stockbot/agents/financial.py**: Reusable agent factories (markdown report creator, stock analysis agent, chart creator)
+- **stockbot/portfolio/analysis.py**: Portfolio analysis crew orchestration
+- **stockbot/tools/data.py**: Consolidated market data tools (QuickFS, yFinance, charting, web search)
+- **stockbot/tasks/workflows.py**: Task builders for company lookup and portfolio image ingestion
+
+### Key Frameworks
+
+- **Agno**: Used in `undervalued.py` for agent orchestration with tool calling (gpt-4.1 model)
+- **CrewAI**: Used in `recommendations.py` and `single_stock.py` for multi-agent workflows
+- **Discord.py**: Slash command interface with async interaction handling
+
+### Data Flow Pattern
+
+1. User invokes Discord slash command
+2. Command handler initializes appropriate flow (UndervaluedAnalysisFlow, Top20StocksFlow, etc.)
+3. Flow orchestrates specialized agents with tool access
+4. Agents call market data tools (QuickFS, yFinance, Tavily, Exa, Reddit API)
+5. Results aggregated into markdown reports
+6. Reports saved to `outputs/` or `reports/` and sent back via Discord
+
+## Development Commands
+
+### Environment Setup
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Running the Bot
+```bash
+python main.py  # Starts Discord bot
+```
+
+### Testing
+```bash
+python test.py  # Integration smoke test of market data tools
+python -m pytest stockbot/tools/tests/  # Run tool-specific unit tests
+```
+
+### Quick Experiments
+```bash
+# Run specific flows directly
+python stockbot/flows/undervalued.py
+python scripts/run_value_screening_specialist.py
+python scripts/run_reddit_sentiment.py
+
+# Interactive debugging
+python -i stockbot/agents/financial.py
+python -m ipdb main.py
+```
+
+## Environment Variables
+
+Required secrets (store in `.env`):
+- `DISCORD_TOKEN`: Discord bot token
+- `OPENAI_API_KEY`: OpenAI API key (for gpt-4.1, gpt-5 models)
+- `ANTHROPIC_API_KEY`: Anthropic API key (for Claude Sonnet 4.5)
+- `QUICKFS_API_KEY`: QuickFS financial data API key
+- `TAVILY_API_KEY`: Tavily search API key
+- `EXA_API_KEY`: Exa web search API key
+- `GOOGLE_API_KEY`: Google Gemini API key (optional)
+- `SERPER_API_KEY`: Serper search API key (optional)
+
+## Critical Patterns
+
+### Agent Tool Wrappers
+In `undervalued.py`, tools are wrapped as simple JSON-returning functions for Agno agents:
+```python
+def get_stock_price_history(self, symbol: str, period: str = "1y") -> str:
+    # Returns JSON string with {"symbol": ..., "close_prices": [...], "retrieved_at": ...}
+```
+
+### Token Management
+`undervalued.py` implements token counting and truncation to stay within context limits:
+- `SCREENING_TOKEN_LIMIT = 900_000`
+- `_count_tokens()` uses tiktoken for gpt-4.1
+- `_truncate_for_context()` compresses agent output before passing to next stage
+
+### Reddit Sentiment Analysis
+- **discover_reddit_tickers()**: Fetches recent posts from Baystreetbets/wallstreetbets, extracts top comments, batches into 50-post chunks, summarizes with LLM
+- **reddit_sentiment_scan()**: Targeted search for specific ticker, returns raw posts for agent analysis (no heuristic scoring)
+
+### Discord Async Pattern
+All Discord commands use `await interaction.response.defer()` immediately to prevent timeout, then `await interaction.followup.send()` for results.
+
+### Report Output
+- Undervalued flow: `outputs/undervalued_analysis/{phase}_{timestamp}.md`
+- Top 20 flow: `reports/top20_report_{timestamp}.md` (temp file, deleted after sending)
+- Single stock: `stock_analysis_{ticker}_{date}.md`
+
+## Testing Approach
+
+- Unit tests in `stockbot/tools/tests/` use mocks for external APIs
+- Mark live API tests with `pytest.mark.external` to avoid quota consumption
+- Integration test in `test.py` performs real API calls (use sparingly)
+- Golden markdown snapshots can be stored in `reports/snapshots/` for comparison
+
+## Common Gotchas
+
+1. **Model IDs**: Agno uses `gpt-4.1`, CrewAI uses `gpt-5` and `anthropic/claude-sonnet-4-5-20250929`
+2. **Chart paths**: Charts generated by ChartingTool must be registered via `_register_chart_path()` for inclusion in agent image context
+3. **Reddit API**: Requires `User-Agent` header; rate limits apply
+4. **QuickFS symbols**: Append `:US` suffix (e.g., `AAPL:US`)
+5. **Markdown sanitization**: Agent output may include code fences that need stripping via `_sanitize_agent_output()`
+6. **Discord file cleanup**: Temp report files must be unlinked after sending to avoid disk bloat
+
+## Code Style
+
+- Python 3.10+, PEP 8, 4-space indentation
+- `snake_case` functions/modules, `PascalCase` classes, `UPPER_SNAKE` constants
+- Type hints on public functions
+- Prefer `dataclasses` or Pydantic `BaseModel` for structured data
+- f-string formatting: `f"{value:.2f}"`
+- Import order: stdlib → third-party → local (alphabetized)
+
+## Undervalued Stock Flow Deep Dive
+
+The `stockbot/flows/undervalued.py` module implements a sophisticated two-stage analysis pipeline using Agno agents to identify fundamentally strong but underpriced stocks.
+
+### Architecture
+
+**Framework**: Agno (not CrewAI) with OpenAI gpt-4.1 model
+**Output Directory**: `outputs/undervalued_analysis/`
+
+### Three Specialized Agents
+
+1. **Value Screening Specialist** (`screening_agent`):
+   - Initial quantitative screening of market candidates
+   - Prioritizes TSX/Canadian stocks from Reddit (r/Baystreetbets, r/wallstreetbets)
+   - Validates fundamental metrics against screening criteria
+   - Output: `initial_screening_{timestamp}.md`
+
+2. **Turnaround Potential Analyst** (`turnaround_agent`):
+   - Analyzes catalysts and turnaround probability
+   - Maps 12-month catalyst timelines
+   - Compares current metrics to 2019 baselines
+   - Output: `turnaround_analysis_{timestamp}.md`
+
+3. **BayStreet Reddit Scout** (`reddit_sentiment_agent`):
+   - Parses Reddit chatter about specific tickers
+   - Prioritizes r/Baystreetbets (TSX focus) over r/wallstreetbets
+   - No heuristic scoring—returns raw posts for agent analysis
+   - Cites sources with permalink URLs
+
+### Tool Functions (JSON-Returning)
+
+All tools return JSON strings for Agno agent consumption:
+- `get_stock_price_history(symbol, period)`: Historical closing prices
+- `get_company_profile(symbol)`: Company info with valuation metrics
+- `get_financial_facts(symbol)`: QuickFS financial statements (last 3 periods, auto-charted)
+- `get_real_time_quote(symbol)`: Intraday price, volume, market cap
+- `get_recent_news(symbol)`: Yahoo Finance headlines
+- `search_market_events(query)`: EXA web search
+- `search_global_research(query)`: Tavily search for macro themes
+- `reddit_sentiment_scan(query, max_posts)`: Reddit post aggregation
+- `discover_reddit_tickers(max_posts)`: Fetch recent posts with top comments, batch summarize
+- `get_options_chain_snapshot(symbol, date)`: Options chain data
+- `create_metric_chart(metric_name, data)`: PNG chart generation
+- `summarize_context_tool(text, max_tokens)`: Context compression
+
+### Workflow Execution
+
+```python
+# Entry point
+async def execute_undervalued_analysis() -> str:
+    1. Call discover_reddit_tickers() → batch summaries
+    2. Pass Reddit summary to screening_agent
+    3. screening_agent.arun(screening_prompt, images=charts)
+    4. Truncate screening output to SCREENING_TOKEN_LIMIT (900k)
+    5. Pass truncated summary to turnaround_agent
+    6. turnaround_agent.arun(turnaround_prompt, images=charts)
+    7. Combine both stages into final_report
+    8. Save three markdown files (screening, turnaround, final)
+```
+
+### TSX/Reddit Prioritization
+
+The screening prompt now explicitly prioritizes:
+- **Priority 1**: TSX stocks from r/Baystreetbets with positive sentiment
+- **Priority 2**: US stocks meeting quantitative criteria
+- TSX stocks with Reddit validation get +1.5 confidence boost
+- Reddit catalysts must be cross-validated with official data sources
+
+### Token Management Strategy
+
+- Uses `tiktoken` for accurate token counting (gpt-4.1 encoding)
+- `_truncate_for_context()` ensures downstream prompts fit in context window
+- Financial metrics auto-charted but limited to last 3 periods to reduce tokens
+- Charts registered via `_register_chart_path()` and attached as `Image` objects (max 8)
+
+### Reddit API Integration
+
+- `User-Agent: stock-analysis-bot/1.0` header required
+- Searches r/Baystreetbets with `{query} TSX` modifier
+- Fetches top comments via `.json` permalink endpoint
+- Batches posts (50 per batch) for LLM summarization to avoid overwhelming context
+- Raw post format: `{title, selftext, score, num_comments, created_utc, author, permalink, top_comments}`
+
+### Chart Handling
+
+Charts are generated by `ChartingTool` and stored as PNG files:
+1. `get_financial_facts()` auto-generates charts for revenue, net_income, operating_cash_flow, free_cash_flow
+2. Chart paths appended to `self._chart_paths`
+3. Before agent runs, charts converted to `Image(path=...)` objects
+4. Last 8 charts passed to agent as visual context
+
+### Preferences Configuration
+
+```python
+ValueScreeningPreferences(
+    max_price=100.0,           # Maximum stock price
+    min_price=5.0,             # Minimum stock price
+    min_volume=500000,         # Minimum daily volume
+    max_pe=25.0,               # Maximum P/E ratio
+    min_market_cap=300000000,  # $300M minimum
+    min_current_ratio=1.5,     # Liquidity requirement
+    max_debt_equity=2.0,       # Leverage limit
+    price_vs_high=0.4          # Max 40% decline from 52-week high
+)
+```
+
+### Output Sanitization
+
+Agent responses may include markdown code fences that must be stripped:
+```python
+def _sanitize_agent_output(content: str) -> str:
+    # Removes ```markdown and ``` wrappers
+    # Critical before passing between stages
+```
+
+### Running Standalone
+
+```bash
+# Direct execution with random preferences
+python stockbot/flows/undervalued.py
+
+# Via script with specific preferences
+python scripts/run_value_screening_specialist.py
+
+# Reddit sentiment only
+python scripts/run_reddit_sentiment.py
+```
+
+## Prompts Directory Structure
+
+All agent prompts and task descriptions are centralized in the `prompts/` directory for easy maintenance and version control.
+
+### Organization
+
+```
+prompts/
+├── README.md                    # Detailed documentation
+├── undervalued/                 # Undervalued stock flow (Agno)
+│   ├── screening_agent_instructions.txt
+│   ├── screening_prompt.txt
+│   ├── turnaround_agent_instructions.txt
+│   ├── turnaround_prompt.txt
+│   ├── reddit_sentiment_agent_instructions.txt
+│   └── reddit_sentiment_prompt.txt
+├── agents/                      # Reusable CrewAI agents
+│   ├── markdown_report_creator.txt
+│   ├── stock_analysis_agent.txt
+│   ├── chart_creator.txt
+│   └── ...
+└── single_stock/                # Single stock analysis flow
+    ├── financial_data_researcher.txt
+    ├── technical_analyst.txt
+    └── ...
+```
+
+### Loading Prompts
+
+**Undervalued Flow** (Agno):
+```python
+from pathlib import Path
+
+def load_prompt(prompt_name: str) -> str:
+    prompt_path = Path(__file__).parent.parent.parent / "prompts" / "undervalued" / f"{prompt_name}.txt"
+    return prompt_path.read_text(encoding="utf-8")
+
+# Load agent instructions
+instructions = load_prompt("screening_agent_instructions").strip().split('\n')
+
+# Load and format task prompts
+template = load_prompt("screening_prompt")
+prompt = template.format(ticker="AAPL", max_price="100.00", ...)
+```
+
+**CrewAI Agents**:
+```python
+# Read from prompts/agents/ files instead of inline strings
+# Use textwrap.dedent() for formatting if needed
+```
+
+### Benefits
+
+- **Centralized Management**: All prompts in one location
+- **Version Control**: Track prompt evolution in git history
+- **No Code Changes**: Iterate on prompts without modifying Python
+- **Easy Testing**: A/B test different prompt versions
+- **Collaboration**: Non-developers can improve prompts
+
+### Dynamic Values
+
+Prompts use Python format string placeholders:
+- `{ticker}` - Stock symbol
+- `{timestamp}` - Current date/time
+- `{max_price}`, `{min_price}` - Price constraints
+- `{reddit_section}` - Conditional Reddit summary
+- `{screening_summary}` - Previous stage output
+
+## Adding New Features
+
+When adding new agents or flows:
+1. Place flow modules in `stockbot/flows/`
+2. Add reusable agent factories to `stockbot/agents/financial.py`
+3. Create new tools in `stockbot/tools/data.py` (inherit from `BaseTool`)
+4. **Create prompt files in `prompts/{flow_name}/`** for agent instructions and task descriptions
+5. Add Discord command handlers in `main.py`
+6. Update environment variable list in this file if new APIs required
+7. Include module-level docstring describing agent responsibility
+
+### Prompt Management Best Practices
+
+- Store all prompts in `prompts/` directory, not inline in code
+- Use descriptive filenames: `{agent_name}_instructions.txt` or `{task_name}_task.txt`
+- Include dynamic placeholders using Python format strings: `{variable_name}`
+- Test prompt changes against existing outputs before committing
+- Document significant prompt changes in commit messages
+- Create subdirectories for each flow/module to keep organized

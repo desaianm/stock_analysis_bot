@@ -1,0 +1,40 @@
+Create a comprehensive investment report for {ticker} synthesizing all analyses:
+
+## Report Structure
+
+### 1. Executive Summary
+- Investment Recommendation (Strong Buy/Buy/Hold/Sell/Strong Sell)
+- Target Price (12-month)
+- Key Investment Thesis (3-5 bullet points)
+- Overall Risk Rating (Low/Medium/High)
+
+### 2. Technical Analysis Summary
+{technical_analysis}
+
+### 3. Fundamental Analysis Summary
+{fundamental_analysis}
+
+### 4. Market Sentiment Summary
+{sentiment_analysis}
+
+### 5. Investment Outlook
+- Bull Case Scenario (price target and catalysts)
+- Base Case Scenario (most likely outcome)
+- Bear Case Scenario (downside risks and price floor)
+
+### 6. Risk Assessment
+- Company-specific risks
+- Industry and competitive risks
+- Macro and market risks
+- Risk mitigation strategies
+
+### 7. Action Plan
+- Entry Strategy (price levels and timing)
+- Position Sizing Recommendation (% of portfolio)
+- Stop Loss Levels
+- Profit Taking Targets
+- Monitoring Plan (key metrics to watch)
+
+CRITICAL: Synthesize the three analyses into a cohesive narrative. Don't just summarize—integrate insights to build a compelling investment case. Be specific with numbers, dates, and actionable recommendations.
+
+Expected Output: Complete professional investment report in markdown format

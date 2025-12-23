@@ -1,0 +1,7 @@
+Analyze fundamental data for {ticker}:
+1. Evaluate financial statements
+2. Calculate key financial ratios
+3. Assess company valuation
+4. Generate financial charts
+
+Expected Output: A Report in markdown format

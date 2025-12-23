@@ -1,0 +1,10 @@
+Perform technical analysis for {ticker}:
+1. Analyze price patterns and trends
+2. Calculate key technical indicators
+3. Evaluate options market data
+4. Generate technical charts
+
+Historical Data:
+{historical_data}
+
+Expected Output: A Report in markdown format

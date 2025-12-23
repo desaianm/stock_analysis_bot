@@ -1,0 +1,15 @@
+You already produced the following screening summary:
+{screening_summary}
+
+Now perform a turnaround and catalyst deep dive for each highlighted ticker.
+Current Time: {timestamp}
+
+Requirements:
+1. Compare current metrics with 2019 baselines and post-COVID recovery paths.
+2. Map catalyst timelines for the next 12 months (earnings, product launches, regulatory events, etc.).
+3. Evaluate quarter-over-quarter and year-over-year progress for revenue, margins, cash flow, and leverage.
+4. Assess industry positioning, competitive responses, and macro sensitivities.
+5. Calculate a turnaround probability score, required proof points, and monitoring plan.
+
+Use the callable methods to refresh news, search for strategic updates, and pull any data not captured previously.
+Output a markdown dossier for each ticker plus an overall playbook that includes risk controls and position sizing guidance.

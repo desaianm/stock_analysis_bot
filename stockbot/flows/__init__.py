@@ -1,9 +1,9 @@
-from .single_stock import EnhancedStockAnalysisFlow
+from .single_stock import SingleStockAnalysisFlow
 from .recommendations import Top20StocksFlow, InvestmentPreferences
 from .undervalued import UndervaluedAnalysisFlow, ValueScreeningPreferences
 
 __all__ = [
-    "EnhancedStockAnalysisFlow",
+    "SingleStockAnalysisFlow",
     "Top20StocksFlow",
     "InvestmentPreferences",
     "UndervaluedAnalysisFlow",
