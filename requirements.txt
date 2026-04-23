@@ -7,6 +7,7 @@ langchain-google-genai
 langchain-openai
 langchain-anthropic
 langchain-tavily
+ddgs
 python-dotenv
 openai
 ollama
@@ -14,10 +15,9 @@ huggingface_hub
 litellm==1.77.5
 discord.py
 scipy
-quickfs
 matplotlib
 yfinance
-agno 
+agno
 anthropic 
 mcp 
 'fastapi[standard]' 

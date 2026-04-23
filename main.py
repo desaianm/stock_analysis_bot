@@ -17,6 +17,7 @@ from discord import app_commands
 from stockbot.flows.single_stock import SingleStockAnalysisFlow
 from stockbot.tasks.workflows import MarkdownReportCreationTasks, update_portfolio
 from stockbot.tools.data import CompanyInfoTool
+from stockbot.scheduler.daily_tracker import DailyPortfolioScheduler
 
 
 
@@ -62,6 +63,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+# Initialize portfolio scheduler
+portfolio_scheduler = DailyPortfolioScheduler()
+daily_update_task = portfolio_scheduler.create_task()
+
 # Create a directory for reports if it doesn't exist
 REPORTS_DIR = Path("reports")
 REPORTS_DIR.mkdir(exist_ok=True)
@@ -88,6 +93,11 @@ async def on_ready():
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
+
+        # Start daily portfolio tracking scheduler
+        portfolio_scheduler.start(daily_update_task)
+        print("Daily portfolio scheduler started")
+
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
@@ -120,9 +130,9 @@ async def get_top_20(interaction: discord.Interaction):
         print(f"Error in top20 command: {e}")
 
 
-@bot.tree.command(name="portfolio", description="Get portfolio analysis")
-async def get_portfolio(interaction: discord.Interaction):
-    """Get portfolio analysis"""
+@bot.tree.command(name="portfolio_old", description="Get legacy portfolio analysis (deprecated)")
+async def get_portfolio_old(interaction: discord.Interaction):
+    """Get legacy portfolio analysis (deprecated - use /portfolio instead)"""
     await interaction.response.defer()
     await interaction.followup.send("Analyzing portfolio... Please wait.")
     try:
@@ -133,23 +143,48 @@ async def get_portfolio(interaction: discord.Interaction):
         # Create and run portfolio analysis
         analyzer = PortfolioAnalysisCrew()
         analysis_report = analyzer.analyze_portfolio(portfolio_data)
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         report_file = REPORTS_DIR / f"portfolio_analysis_{timestamp}.md"
-        
+
         with open(report_file, "w", encoding='utf-8') as f:
             f.write(analysis_report)
-            
+
         await interaction.followup.send(
             "Analysis complete! Here's your portfolio report:",
             file=discord.File(report_file)
         )
-        
+
         # Remove the file after sending
         report_file.unlink()
-        
+
     except Exception as e:
         await interaction.followup.send("An error occurred while analyzing the portfolio.")
+        print(f"Error in portfolio command: {e}")
+
+@bot.tree.command(name="portfolio", description="View portfolio performance and learning insights")
+async def view_portfolio(interaction: discord.Interaction):
+    """Get portfolio performance summary and learning insights."""
+    try:
+        await interaction.response.defer()
+
+        from stockbot.flows.performance_tracker import PerformanceTrackerFlow
+
+        tracker = PerformanceTrackerFlow()
+        report = await tracker.generate_performance_report()
+
+        # Send report in chunks if too long
+        if len(report) <= 1900:
+            await interaction.followup.send(f"```markdown\n{report}\n```")
+        else:
+            # Split into chunks
+            chunks = [report[i:i+1900] for i in range(0, len(report), 1900)]
+            await interaction.followup.send(f"```markdown\n{chunks[0]}\n```")
+            for chunk in chunks[1:]:
+                await interaction.channel.send(f"```markdown\n{chunk}\n```")
+
+    except Exception as e:
+        await interaction.followup.send(f"Error generating portfolio report: {str(e)}")
         print(f"Error in portfolio command: {e}")
 
 @bot.tree.command(name="undervalued", description="Get undervalued stock analysis")

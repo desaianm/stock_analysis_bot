@@ -3,6 +3,38 @@ Current Time: {timestamp}
 
 {reddit_section}
 
+## HISTORICAL CONTEXT RESEARCH
+
+**IMPORTANT**: Before screening new candidates, leverage past research to inform your analysis:
+
+1. **Search Past Discoveries**: Use `search_past_finds()` to:
+   - Find stocks previously researched in similar sectors
+   - Review past investment theses that worked/didn't work
+   - Identify patterns in successful vs unsuccessful picks
+   - Check if any Reddit-mentioned tickers were previously analyzed
+
+2. **Ticker-Specific History**: For each candidate, call `get_ticker_history(ticker)` to:
+   - See if we've analyzed this stock before
+   - Review changes in fundamentals since last analysis
+   - Check if previous concerns were resolved or worsened
+   - Update confidence scores based on historical performance
+
+3. **Similar Stock Analysis**: Use `get_similar_stocks(ticker, sector)` to:
+   - Find comparable companies we've researched
+   - Learn from similar investment theses
+   - Identify sector-specific patterns and risks
+   - Cross-validate valuation metrics
+
+4. **Recent High-Quality Finds**: Call `get_recent_discoveries(days=90, min_confidence=6.0)` to:
+   - Review successful patterns from recent analyses
+   - Understand what made past picks compelling
+   - Avoid repeating mistakes from low-confidence finds
+   - Calibrate your confidence scoring
+
+**Use this historical context to**: Refine screening criteria, validate Reddit claims against past data, identify repeat opportunities, and improve confidence calibration.
+
+{learning_insights_section}
+
 ## PRIMARY SCREENING DIRECTIVE
 
 **Priority 1 (HIGHEST)**: TSX stocks and Canadian equities discussed on r/Baystreetbets
@@ -35,6 +67,7 @@ For each candidate (prioritize TSX stocks first):
    - Cross-check mentioned catalysts with official sources
    - Assess sentiment quality (informed analysis vs hype)
    - Identify unique insights missed by institutional analysts
+   - **CRITICAL**: Include Reddit post URLs as citations (format: [r/subreddit discussion](URL))
    - Note: TSX stocks with strong community backing receive +15% confidence boost
 
 2. **Balance Sheet Strength**:
@@ -47,12 +80,22 @@ For each candidate (prioritize TSX stocks first):
    - Market share dynamics, revenue concentration
    - Sector positioning (especially resource/energy for TSX)
 
-4. **Management & Governance**:
+4. **Hiring Activity & Growth Signals** (CRITICAL INDICATOR):
+   - Use `search_market_events()` to find the company's careers/jobs page
+   - Analyze current job postings as a leading indicator of financial health
+   - **Healthy signs**: Active hiring in revenue-generating roles (sales, product, engineering)
+   - **Warning signs**: Layoffs, hiring freezes, or only posting executive replacements
+   - **Growth indicators**: Expansion into new markets, opening new offices, increasing headcount
+   - **Geographic expansion**: New offices in Canada/US indicating cross-border growth
+   - Compare current hiring levels to 12 months ago if data available
+   - Note: Strong hiring activity can validate growth thesis and offset temporary financial weakness
+
+5. **Management & Governance**:
    - Executive changes, strategic updates, capital allocation
    - Insider ownership and recent buying activity
    - Canadian regulatory environment considerations
 
-5. **Competitive & Market Position**:
+6. **Competitive & Market Position**:
    - Market standing relative to peers (TSX vs broader market)
    - Competitive dynamics, near-term opportunities
    - Exchange rate impact on valuation
@@ -61,12 +104,13 @@ For each candidate (prioritize TSX stocks first):
 
 1. **Priority Flag**: TSX/Canadian stock? Reddit-sourced? (prominently mark)
 2. **Timestamped Metrics**: Real-time quotes, fundamentals, valuation multiples
-3. **Reddit Catalyst Verification**: If mentioned, validate claims with data
-4. **Key Strengths**: 3-5 compelling points with source dates
-5. **Risk Assessment**: Downside scenarios with timing/context
-6. **Catalyst Timeline**: Expected triggers with dates
-7. **Upside Case**: >50% 12-month potential path with assumptions
-8. **Confidence Score**: 1-10 (add +1.5 for TSX stocks with Reddit validation)
+3. **Reddit Catalyst Verification**: If mentioned, validate claims with data and **INCLUDE POST URLs**
+4. **Hiring Activity Assessment**: Current job postings, hiring trends, growth signals
+5. **Key Strengths**: 3-5 compelling points with source dates (include hiring data if strong)
+6. **Risk Assessment**: Downside scenarios with timing/context (flag hiring freezes/layoffs)
+7. **Catalyst Timeline**: Expected triggers with dates
+8. **Upside Case**: >50% 12-month potential path with assumptions
+9. **Confidence Score**: 1-10 {confidence_adjustments}
 
 Call the available Python functions to pull the freshest data before forming conclusions.
 Return a markdown report with TSX/Canadian stocks ranked first, followed by US opportunities.

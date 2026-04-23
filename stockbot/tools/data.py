@@ -1,37 +1,298 @@
 import base64
+import contextlib
+import math
 import os
+import re
 import warnings
+from datetime import datetime
+from html import unescape
+from typing import Any, Dict, List, Optional, Type
+from urllib.parse import parse_qs, unquote, urlparse
+
+import requests
+import urllib3
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
-from quickfs import QuickFS
 from pydantic import BaseModel, Field
-from typing import Dict, List, Type
 import random
 import matplotlib.pyplot as plt
 from crewai.tools import BaseTool
 from langchain_core.messages import HumanMessage
-from datetime import datetime
+
+try:
+    from quickfs import QuickFS
+except ImportError:  # pragma: no cover - optional legacy fallback
+    QuickFS = None
 
 # Suppress LangChain deprecation warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain_community")
-from langchain_community.tools import TavilySearchResults
+try:
+    from langchain_community.tools import TavilySearchResults
+except ImportError:  # pragma: no cover - depends on installed optional search stack
+    TavilySearchResults = None
 
 load_dotenv()
 
-tavily_search = TavilySearchResults(max_results=10,
-    search_depth="advanced",
-    include_raw_content=True,)
+_QUICKFS_HOST = "public-api.quickfs.net"
+
+@contextlib.contextmanager
+def _quickfs_ssl_workaround():
+    """Temporarily disable SSL verification for QuickFS requests only.
+
+    QuickFS occasionally serves a certificate with a hostname mismatch.
+    This patches requests.get/post at the module level for the duration of
+    the call, suppressing the urllib3 InsecureRequestWarning as well.
+    """
+    _orig_get = requests.get
+    _orig_post = requests.post
+
+    def _patched_get(url, **kwargs):
+        if _QUICKFS_HOST in url:
+            kwargs.setdefault("verify", False)
+        return _orig_get(url, **kwargs)
+
+    def _patched_post(url, **kwargs):
+        if _QUICKFS_HOST in url:
+            kwargs.setdefault("verify", False)
+        return _orig_post(url, **kwargs)
+
+    requests.get = _patched_get
+    requests.post = _patched_post
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    try:
+        yield
+    finally:
+        requests.get = _orig_get
+        requests.post = _orig_post
+
+def _clean_symbol(symbol: str) -> str:
+    """Normalize symbols for yfinance while preserving exchange suffixes."""
+    return (symbol or "").strip().upper().replace(":US", "")
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number) or math.isinf(number):
+        return None
+    return number
+
+
+def _latest_number(values: list[Any]) -> Optional[float]:
+    for value in reversed(values or []):
+        number = _safe_float(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _ratio(numerator: Optional[float], denominator: Optional[float]) -> Optional[float]:
+    if numerator is None or denominator in (None, 0):
+        return None
+    return numerator / denominator
+
+
+def _statement_series(statement: Any, row_names: list[str]) -> list[float]:
+    """Return one yfinance statement row as oldest-to-newest numeric values."""
+    if statement is None or getattr(statement, "empty", True):
+        return []
+
+    lower_index = {str(index).lower(): index for index in statement.index}
+    row_key = None
+    for row_name in row_names:
+        row_key = lower_index.get(row_name.lower())
+        if row_key is not None:
+            break
+    if row_key is None:
+        return []
+
+    values = []
+    for value in reversed(statement.loc[row_key].tolist()):
+        number = _safe_float(value)
+        if number is not None:
+            values.append(number)
+    return values
+
+
+def _build_yfinance_financial_report(symbol: str) -> Dict[str, Any]:
+    """Build a QuickFS-like financial metric payload from yfinance."""
+    import yfinance as yf
+
+    normalized_symbol = _clean_symbol(symbol)
+    stock = yf.Ticker(normalized_symbol)
+    info = stock.info or {}
+
+    income_stmt = stock.income_stmt
+    balance_sheet = stock.balance_sheet
+    cash_flow = stock.cash_flow
+
+    revenue = _statement_series(
+        income_stmt,
+        ["Total Revenue", "Operating Revenue", "Revenue"],
+    )
+    net_income = _statement_series(
+        income_stmt,
+        ["Net Income", "Net Income Common Stockholders"],
+    )
+    operating_cash_flow = _statement_series(
+        cash_flow,
+        ["Operating Cash Flow", "Total Cash From Operating Activities"],
+    )
+    free_cash_flow = _statement_series(cash_flow, ["Free Cash Flow"])
+    if not free_cash_flow and operating_cash_flow:
+        capex = _statement_series(
+            cash_flow,
+            ["Capital Expenditure", "Capital Expenditures"],
+        )
+        free_cash_flow = [
+            ocf + capex_value
+            for ocf, capex_value in zip(operating_cash_flow[-len(capex) :], capex)
+        ]
+
+    total_debt = _statement_series(balance_sheet, ["Total Debt"])
+    shareholders_equity = _statement_series(
+        balance_sheet,
+        [
+            "Stockholders Equity",
+            "Total Equity Gross Minority Interest",
+            "Common Stock Equity",
+        ],
+    )
+    current_assets = _statement_series(balance_sheet, ["Current Assets"])
+    current_liabilities = _statement_series(balance_sheet, ["Current Liabilities"])
+
+    latest_current_assets = _latest_number(current_assets)
+    latest_current_liabilities = _latest_number(current_liabilities)
+    latest_total_debt = _latest_number(total_debt)
+    latest_equity = _latest_number(shareholders_equity)
+
+    current_ratio = (
+        _safe_float(info.get("currentRatio"))
+        or _ratio(latest_current_assets, latest_current_liabilities)
+    )
+    debt_to_equity = _safe_float(info.get("debtToEquity"))
+    if debt_to_equity is not None and debt_to_equity > 10:
+        debt_to_equity = debt_to_equity / 100
+    if debt_to_equity is None:
+        debt_to_equity = _ratio(latest_total_debt, latest_equity)
+
+    report = {
+        "symbol": normalized_symbol,
+        "source": "yfinance",
+        "revenue": revenue,
+        "net_income": net_income,
+        "operating_cash_flow": operating_cash_flow,
+        "free_cash_flow": free_cash_flow,
+        "total_debt": total_debt,
+        "shareholders_equity": shareholders_equity,
+        "current_assets": current_assets,
+        "current_liabilities": current_liabilities,
+        "current_ratio": current_ratio,
+        "debt_to_equity": debt_to_equity,
+        "price_to_earnings": _safe_float(info.get("trailingPE")),
+        "forward_pe": _safe_float(info.get("forwardPE")),
+        "price_to_book": _safe_float(info.get("priceToBook")),
+        "eps": _safe_float(info.get("trailingEps")),
+        "market_cap": _safe_float(info.get("marketCap")),
+        "current_price": _safe_float(
+            info.get("currentPrice")
+            or info.get("regularMarketPrice")
+            or info.get("previousClose")
+        ),
+        "volume": _safe_float(info.get("volume") or info.get("regularMarketVolume")),
+    }
+
+    if not any(
+        report.get(metric)
+        for metric in ("revenue", "net_income", "total_debt", "current_assets")
+    ) and report.get("market_cap") is None:
+        raise RuntimeError(f"No yfinance financial data returned for {normalized_symbol}")
+
+    return report
+
+
+def _duckduckgo_html_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
+    """Small no-key web-search fallback used when Tavily/DDGS is unavailable."""
+    response = requests.get(
+        "https://duckduckgo.com/html/",
+        params={"q": query},
+        headers={"User-Agent": "stock-analysis-bot/1.0"},
+        timeout=15,
+    )
+    response.raise_for_status()
+    html = response.text
+    results: list[dict[str, str]] = []
+    pattern = re.compile(
+        r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?'
+        r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+        re.DOTALL,
+    )
+    for url, title, snippet in pattern.findall(html):
+        parsed = urlparse(unescape(url))
+        if parsed.path == "/l/":
+            target = parse_qs(parsed.query).get("uddg", [""])[0]
+            url = unquote(target) if target else url
+        clean_title = re.sub("<[^>]+>", "", unescape(title)).strip()
+        clean_snippet = re.sub("<[^>]+>", "", unescape(snippet)).strip()
+        results.append({"title": clean_title, "url": url, "snippet": clean_snippet})
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def _fallback_web_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
+    try:
+        from ddgs import DDGS
+
+        return [
+            {
+                "title": item.get("title"),
+                "url": item.get("href") or item.get("url"),
+                "snippet": item.get("body") or item.get("snippet"),
+            }
+            for item in DDGS().text(query, max_results=max_results)
+        ]
+    except Exception:
+        try:
+            from duckduckgo_search import DDGS
+
+            return [
+                {
+                    "title": item.get("title"),
+                    "url": item.get("href") or item.get("url"),
+                    "snippet": item.get("body") or item.get("snippet"),
+                }
+                for item in DDGS().text(query, max_results=max_results)
+            ]
+        except Exception:
+            return _duckduckgo_html_search(query, max_results=max_results)
+
+
 class TavilySearchInput(BaseModel):
     """Input schema for TavilySearch."""
     query: str = Field(..., description="The query to search the web with")
 
 class TavilySearchTool(BaseTool):
-    name: str = "Tavily Search Tool"
-    description: str = """Useful to search the web for information"""
+    name: str = "Web Search Tool"
+    description: str = """Useful to search the web for information. Uses Tavily when configured, otherwise falls back to DuckDuckGo search."""
     args_schema: Type[BaseModel] = TavilySearchInput
 
-    def _run(self, query: str) -> str:
-        return tavily_search.run(query)
+    def _run(self, query: str) -> List[Dict[str, Any]]:
+        if TavilySearchResults is not None and os.getenv("TAVILY_API_KEY"):
+            try:
+                tavily_search = TavilySearchResults(
+                    max_results=10,
+                    search_depth="advanced",
+                    include_raw_content=False,
+                )
+                return tavily_search.run(query)
+            except Exception:
+                pass
+        return _fallback_web_search(query, max_results=8)
 
 class ExtractionToolInput(BaseModel):
     """Input schema for ExtractionTool."""
@@ -62,8 +323,8 @@ class DataFetchingToolInput(BaseModel):
     metric: str = Field(..., description="Financial metric to retrieve (e.g., 'revenue')")
 
 class DataFetchingTool(BaseTool):
-    name: str = "Retrieve metric data from QuickFS API"
-    description: str = """Useful to retrieve data from the QuickFS API based on the given symbol and metric.
+    name: str = "Retrieve metric data from financial statements"
+    description: str = """Useful to retrieve data from yfinance financial statements based on the given symbol and metric.
         :param symbol: str, only one symbol
         :param metric: str, only one metric
         :return value: list, A list containing the data points retrieved
@@ -76,12 +337,14 @@ class DataFetchingTool(BaseTool):
     args_schema: Type[BaseModel] = DataFetchingToolInput
 
     def _run(self, symbol: str, metric: str) -> List:
-        api_key = os.environ.get("QUICKFS_API_KEY")
-        client = QuickFS(api_key)
-        try:
-            return client.get_data_range(symbol=f"{symbol}:US", metric=metric, period="FY-9:FY")
-        except Exception as exc:  # pragma: no cover - depends on external API
-            raise RuntimeError(f"QuickFS request failed: {exc}") from exc
+        normalized_metric = metric.strip().lower()
+        data = _build_yfinance_financial_report(symbol)
+        value = data.get(normalized_metric)
+        if value is None:
+            raise RuntimeError(
+                f"Metric '{metric}' unavailable for {symbol} from yfinance statements"
+            )
+        return value if isinstance(value, list) else [value]
 
 class CreateChartInput(BaseModel):
     metric: str
@@ -181,12 +444,27 @@ class FinancialReportTool(BaseTool):
     """
     args_schema: Type[BaseModel] = FinancialReportToolInput
 
-    def _run(self, symbol: str) -> str:
-        client = QuickFS(os.getenv("QUICKFS_API_KEY"))
+    def _run(self, symbol: str) -> Dict[str, Any]:
         try:
-            return client.get_data_full(symbol)
-        except Exception as exc:  # pragma: no cover - depends on external API
-            raise RuntimeError(f"QuickFS request failed: {exc}") from exc
+            return _build_yfinance_financial_report(symbol)
+        except Exception as yfinance_exc:
+            if QuickFS is None or not os.getenv("QUICKFS_API_KEY"):
+                raise RuntimeError(
+                    f"Financial statement request failed via yfinance: {yfinance_exc}"
+                ) from yfinance_exc
+
+            try:  # pragma: no cover - optional legacy fallback
+                client = QuickFS(os.getenv("QUICKFS_API_KEY"))
+                with _quickfs_ssl_workaround():
+                    quickfs_data = client.get_data_full(symbol)
+                if isinstance(quickfs_data, dict):
+                    quickfs_data.setdefault("source", "quickfs")
+                return quickfs_data
+            except Exception as quickfs_exc:
+                raise RuntimeError(
+                    "Financial statement request failed via yfinance and QuickFS: "
+                    f"{yfinance_exc}; {quickfs_exc}"
+                ) from quickfs_exc
     
 class ChatAnalysisToolInput(BaseModel):
     """Input schema for ChatAnalysisTool."""
@@ -296,11 +574,13 @@ class StockPriceDataTool(BaseTool):
     def _run(self, symbol: str, period: str) -> List:
         stock = yf.Ticker(symbol)
         data = stock.history(period=period)
-        # print("PRICE DATA", data)
-        print(data['Close'].tolist())
-        price_data = data['Close'].tolist() 
-        print("PRICE DATA", price_data)
-        return price_data
+        if data.empty or "Close" not in data:
+            return []
+        return [
+            round(float(value), 4)
+            for value in data["Close"].dropna().tolist()
+            if _safe_float(value) is not None
+        ]
 
 class RealTimeQuoteToolInput(BaseModel):
     """Input schema for RealTimeQuoteTool."""
@@ -323,9 +603,16 @@ class RealTimeQuoteTool(BaseTool):
     def _run(self, symbol: str) -> List:
         stock = yf.Ticker(symbol)
         info = stock.info
-        array= [info.get('currentPrice'), info.get('volume'), info.get('marketCap')]
-        print("REAL TIME QUOTE", array)
-        return array
+        price = info.get("currentPrice") or info.get("regularMarketPrice")
+        volume = info.get("volume") or info.get("regularMarketVolume")
+        market_cap = info.get("marketCap")
+        try:
+            fast_info = stock.fast_info
+            price = price or fast_info.get("last_price")
+            market_cap = market_cap or fast_info.get("market_cap")
+        except Exception:
+            pass
+        return [_safe_float(price), _safe_float(volume), _safe_float(market_cap)]
 
 class OptionsChainToolInput(BaseModel):
     """Input schema for OptionsChainTool."""
@@ -365,8 +652,6 @@ class OptionsChainTool(BaseTool):
         # Fetch options data for the closest available date
         options = stock.option_chain(date=closest_date)
         
-        options_data = [options.calls.to_dict('records'), options.puts.to_dict('records'), closest_date]
-        print("OPTIONS DATA", options_data)
         return [options.calls.to_dict('records'), options.puts.to_dict('records'), closest_date]
 
 class AnalystRecommendationsToolInput(BaseModel):
@@ -390,8 +675,9 @@ class AnalystRecommendationsTool(BaseTool):
     def _run(self, symbol: str) -> List:
         stock = yf.Ticker(symbol)
         recommendations = stock.recommendations
+        if recommendations is None or recommendations.empty:
+            return []
         dict_recoms = recommendations.to_dict('records')
-        print("ANALYST RECOMMENDATIONS", dict_recoms)
         return dict_recoms
 
 class StockNewsToolInput(BaseModel):
@@ -415,18 +701,34 @@ class StockNewsTool(BaseTool):
     def _run(self, symbol: str) -> List:
         stock = yf.Ticker(symbol)
         news_items = stock.news or []
-        titles: List[str] = []
+        headlines: List[Dict[str, Any]] = []
 
         for item in news_items[:5]:
-            title = None
+            title = url = published = None
             if isinstance(item, dict):
-                title = item.get("title") or item.get("headline")
-            if not title and item:
-                title = str(item)
+                content = item.get("content")
+                if isinstance(content, dict):
+                    title = content.get("title") or content.get("headline")
+                    published = content.get("pubDate") or content.get("displayTime")
+                    canonical = content.get("canonicalUrl") or {}
+                    clickthrough = content.get("clickThroughUrl") or {}
+                    if isinstance(canonical, dict):
+                        url = canonical.get("url")
+                    if not url and isinstance(clickthrough, dict):
+                        url = clickthrough.get("url")
+                title = title or item.get("title") or item.get("headline")
+                url = url or item.get("link") or item.get("url")
+                published = published or item.get("publisher") or item.get("providerPublishTime")
             if title:
-                titles.append(title)
+                headlines.append(
+                    {
+                        "title": str(title)[:180],
+                        "url": url,
+                        "published": published,
+                    }
+                )
 
-        return titles
+        return headlines
 
 class CompanyInfoToolInput(BaseModel):
     """Input schema for CompanyInfoTool."""
@@ -473,17 +775,24 @@ class CompanyInfoTool(BaseTool):
 
 class WebSearchTool():
 
-    def run(self, query: str) -> str:
-        from exa_py import Exa
+    def run(self, query: str) -> List[Dict[str, Any]]:
+        if os.getenv("EXA_API_KEY"):
+            try:
+                from exa_py import Exa
 
-        exa = Exa(api_key = os.getenv("EXA_API_KEY"))
-        try:
-            result = exa.search_and_contents(
-            query,
-            text = True,
-            type = "auto"
-            )
-        except Exception as exc:
-            return self._format_error("web_search_tool", query=query, error=str(exc))
-        return result
+                exa = Exa(api_key=os.getenv("EXA_API_KEY"))
+                result = exa.search_and_contents(query, text=True, type="auto")
+                if hasattr(result, "results"):
+                    return [
+                        {
+                            "title": getattr(item, "title", None),
+                            "url": getattr(item, "url", None),
+                            "snippet": getattr(item, "text", None),
+                        }
+                        for item in result.results[:8]
+                    ]
+                return result
+            except Exception:
+                pass
+        return _fallback_web_search(query, max_results=8)
     

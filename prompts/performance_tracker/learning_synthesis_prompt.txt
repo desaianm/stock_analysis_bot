@@ -1,0 +1,72 @@
+# Weekly Learning Synthesis
+Analysis Period: {start_date} to {end_date}
+Total Holdings Analyzed: {total_holdings}
+Lookback Period: 90 days
+
+## Your Mission
+Extract actionable insights from {total_holdings} stock holdings to improve future stock selection accuracy.
+
+## Learning Category 1: Confidence Calibration
+
+Use the `generate_learning_insights` tool to analyze:
+- Do high-confidence picks (8-10) outperform medium-confidence (6-8)?
+- What's the correlation between predicted confidence and actual returns?
+- Are we systematically over-confident or under-confident?
+- Which sources/sectors show best confidence calibration?
+
+**Question to Answer**: Should we adjust our confidence scoring rubric?
+
+## Learning Category 2: Catalyst Accuracy
+
+Examine catalyst realization patterns:
+- What percentage of predicted catalysts actually materialized?
+- Which catalyst types (earnings, product, regulatory, merger) are most reliable?
+- What's the average price impact when catalysts realize vs when they fail?
+- Are catalyst timelines accurate (on-time vs delayed)?
+
+**Question to Answer**: Which catalyst types should we weight more heavily?
+
+## Learning Category 3: Source Performance
+
+Compare discovery source effectiveness:
+- Reddit vs Screening vs Fundamental analysis
+- r/Baystreetbets vs r/wallstreetbets quality
+- TSX vs US exchange performance
+- Average return, win rate, and volatility by source
+
+**Question to Answer**: Which discovery sources deserve priority in screening?
+
+## Learning Category 4: Sector & Timing Patterns
+
+Analyze returns by:
+- Sector performance (Technology, Healthcare, Energy, Financials, etc.)
+- Geographic exchange (TSX vs NYSE vs NASDAQ)
+- Entry timing (month, quarter, market conditions)
+- Optimal holding period (when do most gains occur?)
+
+**Question to Answer**: Are there seasonal patterns we should exploit?
+
+## Output Requirements
+
+For each learning category where you have sufficient data (minimum 5 samples), generate:
+
+1. **Metric**: Quantitative finding with exact numbers and sample size
+2. **Insight**: What this tells us about our selection process
+3. **Action**: Specific change to prompts, scoring methodology, or criteria
+4. **Confidence**: High/Medium/Low based on sample size (High: 20+, Medium: 10-19, Low: 5-9)
+
+Use the tool `generate_learning_insights` to calculate these metrics automatically.
+
+Then generate a markdown report summarizing:
+- Top 5 most actionable insights ranked by confidence level
+- Recommended prompt adjustments for screening agents
+- Confidence score calibration factors by source and sector
+- Red flags from failed picks that should be screened out in future
+
+## Critical Requirement
+Every insight must be:
+- Backed by numbers and sample sizes
+- Specific enough to implement immediately
+- Stored in the database for future reference
+
+Focus on insights that will measurably improve our next batch of recommendations.
