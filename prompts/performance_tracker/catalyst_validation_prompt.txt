@@ -1,0 +1,83 @@
+# Catalyst Validation Review
+Ticker: {ticker}
+Company: {company_name}
+Entry Date: {entry_date}
+Days Held: {days_held}
+
+## Predicted Catalysts from Original Analysis
+
+The following catalysts were predicted when we entered this position:
+{predicted_catalysts_list}
+
+## Your Validation Task
+
+For **each** predicted catalyst above, perform a thorough validation:
+
+### Step 1: Search for Evidence
+Use the `validate_catalyst_realization` tool to:
+- Search for official announcements (earnings releases, product launches, regulatory filings)
+- Find news articles mentioning the catalyst
+- Locate analyst reports discussing the event
+- Check for social media/Reddit discussions about catalyst realization
+
+### Step 2: Determine Realization Status
+Classify each catalyst as:
+- **Realized**: Event occurred as predicted, had material impact on stock
+- **Partially Realized**: Event occurred but impact different than expected (explain why)
+- **Delayed**: Event hasn't occurred yet but is still plausible within reasonable timeframe
+- **Failed**: Event won't occur, expectations were wrong, or catalyst didn't matter
+
+### Step 3: Measure Price Impact (if realized)
+For each realized catalyst:
+- What was the stock price 1 day before the catalyst news?
+- What was the price 1 day after? 1 week after? 1 month after?
+- Did price move in the predicted direction?
+- Was the magnitude of the move aligned with our expectations?
+- Calculate the percentage price change attributable to this catalyst
+
+### Step 4: Document Evidence
+For each catalyst, provide:
+- **Status**: Realized/Partially/Delayed/Failed
+- **Evidence**: List 2-3 specific news headlines or announcements with dates
+- **Price Impact**: Percentage change with timeline
+- **Validation Notes**: Your assessment in 1-2 sentences
+- **News URLs**: At least one source link for verification
+
+### Step 5: Update Database
+The system will automatically update the catalyst_tracking table with:
+- realization_status
+- realization_date (if realized)
+- impact_on_price (percentage change)
+- validation_notes (your assessment)
+- validated_at (current timestamp)
+
+## Output Format
+
+Generate a markdown summary with:
+
+1. **Catalyst Summary Table**
+   | Catalyst | Status | Evidence Count | Price Impact |
+   |----------|--------|----------------|--------------|
+
+2. **Detailed Findings for Each Catalyst**
+   - Catalyst description
+   - Realization status with reasoning
+   - Supporting evidence (headlines, dates, sources)
+   - Price reaction analysis
+   - Lessons learned (was prediction accurate? what would improve it?)
+
+3. **Overall Assessment**
+   - X out of Y catalysts realized
+   - Average price impact of realized catalysts
+   - Confidence in our catalyst prediction methodology
+   - Recommendations for future catalyst identification
+
+## Important Guidelines
+
+- Be conservative: Only mark as "realized" if there's clear evidence
+- Cite sources: Include news URLs and dates for all claims
+- Measure impact objectively: Use actual price data, not speculation
+- Learn from failures: Failed catalysts teach us as much as successes
+- Consider timing: A catalyst delayed by 6 months might still be valuable
+
+Your thorough catalyst validation helps improve our prediction accuracy over time.

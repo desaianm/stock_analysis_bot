@@ -1,93 +1,111 @@
-# Financial Analysis Discord Bot
+# Stock Analysis Bot
 
-A sophisticated Discord bot powered by AI agents for comprehensive stock market analysis and investment recommendations.
+Discord bot and local research workflows for stock screening, single-company analysis, undervalued-candidate discovery, and portfolio performance tracking.
+
+The project combines agent workflows with market-data tools, web search, chart generation, and a local SQLite database. Reports and run logs are generated locally and are intentionally ignored by git.
 
 ## Features
 
-- **Top 20 Stock Recommendations** (`/top20`)
-  - Quantitative screening of market candidates
-  - Sector allocation optimization
-  - Head-to-head stock tournaments
-  - Portfolio optimization and risk analysis
-  - Detailed investment thesis for each selection
+- Discord slash commands for stock research:
+  - `/top20` builds a portfolio-style recommendation report.
+  - `/undervalued` screens TSX/Canadian and US candidates for value and turnaround setups.
+  - `/analyze <company_name>` creates a single-company investment report.
+  - `/portfolio` summarizes tracked holdings and learning insights.
+- Market-data tooling built around `yfinance`, with optional search providers.
+- Code-level validation for undervalued-flow candidates before saving them to the database.
+- Local persistence for analysis runs, stock finds, holdings, catalysts, and performance snapshots.
+- Daily portfolio tracking scheduler started by the Discord bot.
 
-- **Undervalued Stock Analysis** (`/undervalued`)
-  - Screens for undervalued stocks based on multiple criteria
-  - Analyzes financial metrics, technical indicators, and market sentiment
-  - Provides comprehensive valuation analysis
-  - Risk assessment and monitoring guidelines
+## Project Layout
 
-- **Individual Company Analysis** (`/analyze [company_name]`)
-  - Detailed company lookup and ticker symbol identification
-  - Comprehensive financial analysis
-  - Technical analysis and charts
-  - Market sentiment analysis
-  - Investment recommendations
+```text
+main.py                         Discord bot entrypoint and slash commands
+stockbot/agents/                CrewAI agent factories
+stockbot/flows/                 Agno/CrewAI analysis flows
+stockbot/tools/                 Market data, search, charting, and performance tools
+stockbot/tasks/                 Command-specific task helpers
+stockbot/database/              SQLite schema and managers
+stockbot/scheduler/             Daily portfolio tracking scheduler
+prompts/                        Agent and workflow prompt templates
+scripts/                        Local diagnostic and runner scripts
+```
+
+Generated local files:
+
+```text
+logs/                           Agno/debug logs
+outputs/                        Markdown reports
+plots/                          Generated chart PNGs
+stock_analysis.db               Local SQLite database
+agno.db                         Local Agno state
+```
+
+These are ignored by git.
 
 ## Setup
 
-1. Install required dependencies:
+Use Python 3.10+.
 
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
 
-## Project Structure
+Create a local `.env` file:
 
-- `main.py` – Discord bot entrypoint and slash-command handlers.
-- `stockbot/flows/` – CrewAI orchestration modules (`single_stock.py`, `recommendations.py`, `undervalued.py`).
-- `stockbot/agents/financial.py` – Reusable agent factories for lookup/reporting tasks.
-- `stockbot/portfolio/analysis.py` – Portfolio Crew orchestration used by the `/portfolio` command.
-- `stockbot/tools/data.py` – QuickFS, market-data, charting, and markdown helper tools.
-- `stockbot/tasks/workflows.py` – Company lookup task builder and portfolio image ingestion helper.
+```bash
+OPENAI_API_KEY=...
+DISCORD_TOKEN=...
+ANTHROPIC_API_KEY=...
+GEMINI_API_KEY=...
+TAVILY_API_KEY=...              # optional; search falls back when unavailable
+EXA_API_KEY=...                 # optional
+SERPER_API_KEY=...              # optional
+REDDIT_CLIENT_ID=...            # optional for Reddit integrations
+REDDIT_CLIENT_SECRET=...        # optional for Reddit integrations
+```
 
-## Commands
+Do not commit `.env` or generated databases.
 
-- `/top20` - Get top 20 stock recommendations
-- `/undervalued` - Get undervalued stock analysis
-- `/analyze [company_name]` - Analyze a specific company
-- `/help` - Show available commands
+## Run
 
-## Dependencies
+Start the Discord bot:
 
-Key dependencies include:
-- crewai
-- langchain
-- discord.py
-- quickfs
-- yfinance
-- matplotlib
-- pandas
-- numpy
+```bash
+python main.py
+```
 
-## Output
+Run the undervalued flow directly:
 
-Analysis reports are saved in the `reports/` directory in Markdown format.
+```bash
+python stockbot/flows/undervalued.py
+```
 
-## Notes
+Run focused diagnostics:
 
-- The bot uses multiple AI agents working together to provide comprehensive analysis
-- Analysis may take several minutes to complete due to the depth of research
-- All financial data is sourced from reputable providers through official APIs
+```bash
+python test.py
+python -m py_compile stockbot/tools/data.py stockbot/flows/undervalued.py
+```
 
-## License
+## Data Sources
 
-MIT License
+The primary financial statement and quote path uses `yfinance`. Web search uses Tavily when `TAVILY_API_KEY` is configured, with fallback search support through `ddgs`. Exa and Serper remain optional where existing tools use them.
 
-Copyright (c) 2024
+The undervalued flow rejects candidates before persistence when required values are missing or fail configured hard screens, such as market cap, price range, volume, P/E, current ratio, or debt/equity.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+## Development Notes
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+- Keep generated artifacts out of commits: `logs/`, `outputs/`, `plots/`, `.DS_Store`, and local database files are ignored.
+- Add new flow-specific prompts under `prompts/<flow_name>/`.
+- Add reusable tool code under `stockbot/tools/`.
+- Add database schema changes to `stockbot/database/schema.sql` and update the matching manager.
+- Prefer focused smoke checks over full agent runs when changing a single tool; full runs can spend API quota.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+## Troubleshooting
 
+- If a slash command times out, check the latest file in `logs/`.
+- If market data is empty for Canadian symbols, verify the Yahoo suffix (`.TO`, `.V`, `.CN`, `.NE`).
+- If no candidates are saved after `/undervalued`, inspect the “Code-Level Hard Screen Review” section in the generated final report.
+- If search fails, verify optional API keys or install `ddgs`.

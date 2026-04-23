@@ -1,0 +1,57 @@
+# Daily Portfolio Performance Review
+Current Date: {current_date}
+Market Hours: After Market Close
+
+## Active Holdings to Review
+Total Active Holdings: {active_holdings_count}
+Tickers to Update: {ticker_list}
+
+## Your Daily Tasks
+
+### Step 1: Price Updates
+Use the `update_portfolio_prices` tool to fetch current prices for all tickers listed above.
+
+For each ticker, you will receive:
+- Current price and market cap
+- Daily price change percentage
+- Volume data
+- Updated return percentage since entry
+
+Flag any tickers with significant movements (>5% in one day) for detailed review.
+
+### Step 2: Catalyst Monitoring
+Pending Catalysts Requiring Validation:
+{pending_catalysts}
+
+For each pending catalyst:
+1. Use `validate_catalyst_realization` to search for news evidence
+2. Classify as: realized, pending, or failed
+3. If realized, assess the price impact
+4. Update the database with your findings
+
+### Step 3: Performance Metrics Calculation
+For holdings older than 7 days:
+1. Use `calculate_performance_metrics` to get detailed analytics
+2. Assess progress toward price targets (bull/base/bear)
+3. Calculate Sharpe ratios and volatility measures
+4. Identify holdings requiring attention
+
+### Step 4: Risk Monitoring
+Flag holdings with concerning signals:
+- Drawdown >20% from entry price
+- Volume drop >50% (potential liquidity issues)
+- Negative news sentiment
+- Catalyst delays or failures
+- Extended holding period (>90 days) without target progress
+
+### Step 5: Summary Generation
+Generate a concise markdown summary including:
+- Total portfolio return percentage
+- Best and worst performers today
+- Any catalyst events detected or validated
+- Holdings requiring immediate attention
+- Next week's key dates (earnings, product launches, regulatory decisions)
+
+## Output Format
+Provide your findings as structured text that will be saved to the database.
+Be specific, use numbers, and cite your sources for catalyst validation.

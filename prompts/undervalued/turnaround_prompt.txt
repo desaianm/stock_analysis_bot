@@ -4,6 +4,32 @@ You already produced the following screening summary:
 Now perform a turnaround and catalyst deep dive for each highlighted ticker.
 Current Time: {timestamp}
 
+## LEVERAGE HISTORICAL RESEARCH
+
+Before analyzing turnaround potential, use past research to enhance your assessment:
+
+1. **Check Ticker History**: For each ticker, call `get_ticker_history(ticker)` to:
+   - Review past turnaround attempts and outcomes
+   - Compare current catalyst timeline to previous predictions
+   - Assess if management delivered on past promises
+   - Track improvement/deterioration trends over time
+
+2. **Find Comparable Turnarounds**: Use `search_past_finds(query="turnaround")` and `get_similar_stocks(ticker, sector)` to:
+   - Learn from successful vs failed turnarounds we've tracked
+   - Identify common patterns in recovery timelines
+   - Calibrate turnaround probability scores based on historical data
+   - Understand sector-specific recovery dynamics
+
+3. **Validate Against Recent Discoveries**: Call `get_recent_discoveries(days=90)` to:
+   - Compare catalyst strength to recent high-confidence picks
+   - Ensure turnaround thesis is differentiated
+   - Learn from recent sector winners/losers
+   - Refine monitoring plan based on what worked
+
+**Apply historical insights to**: Improve turnaround probability scoring, validate catalyst timelines, identify red flags from past failures, and strengthen monitoring frameworks.
+
+{learning_insights_section}
+
 Requirements:
 1. Compare current metrics with 2019 baselines and post-COVID recovery paths.
 2. Map catalyst timelines for the next 12 months (earnings, product launches, regulatory events, etc.).

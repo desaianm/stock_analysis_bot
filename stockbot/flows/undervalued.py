@@ -4,24 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
-import requests
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pytz
+import requests
 from agno.agent import Agent
 from agno.media import Image
 from agno.models.openai import OpenAIChat
+from agno.utils.log import configure_agno_logging
 from crewai_tools import SerperDevTool
 from pydantic import BaseModel, Field
+
 try:
     import tiktoken  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency
     tiktoken = None
 
+from stockbot.database.manager import StockDatabaseManager
+from stockbot.database.performance_manager import PerformanceTrackingManager
 from stockbot.tools.data import (
     ChartingTool,
     CompanyInfoTool,
@@ -31,7 +36,7 @@ from stockbot.tools.data import (
     StockNewsTool,
     StockPriceDataTool,
     TavilySearchTool,
-    WebSearchTool
+    WebSearchTool,
 )
 
 ny_timezone = pytz.timezone("America/New_York")
@@ -39,7 +44,12 @@ ny_timezone = pytz.timezone("America/New_York")
 
 def load_prompt(prompt_name: str) -> str:
     """Load a prompt template from the prompts directory."""
-    prompt_path = Path(__file__).parent.parent.parent / "prompts" / "undervalued" / f"{prompt_name}.txt"
+    prompt_path = (
+        Path(__file__).parent.parent.parent
+        / "prompts"
+        / "undervalued"
+        / f"{prompt_name}.txt"
+    )
     if not prompt_path.exists():
         raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
     return prompt_path.read_text(encoding="utf-8")
@@ -70,15 +80,15 @@ class UndervaluedMetrics(BaseModel):
 class ValueScreeningPreferences(BaseModel):
     max_price: float = Field(default=100.0, description="Maximum stock price")
     min_price: float = Field(default=5.0, description="Minimum stock price")
-    min_volume: float = Field(default=500000, description="Minimum daily trading volume")
+    min_volume: float = Field(
+        default=500000, description="Minimum daily trading volume"
+    )
     max_pe: float = Field(default=25.0, description="Maximum P/E ratio")
     min_market_cap: float = Field(
         default=300000000, description="Minimum market cap ($300M)"
     )
     min_current_ratio: float = Field(default=1.5, description="Minimum current ratio")
-    max_debt_equity: float = Field(
-        default=2.0, description="Maximum debt/equity ratio"
-    )
+    max_debt_equity: float = Field(default=2.0, description="Maximum debt/equity ratio")
     price_vs_high: float = Field(
         default=0.4, description="Maximum decline from 52-week high (40%)"
     )
@@ -87,13 +97,26 @@ class ValueScreeningPreferences(BaseModel):
 class UndervaluedAnalysisFlow:
     """Coordinates the undervalued stock analysis using an Agno agent."""
 
-    SCREENING_TOKEN_LIMIT = 900_000
+    MODEL_INPUT_TOKEN_LIMIT = 300_000
+    MAX_SCREENING_PROMPT_TOKENS = 180_000
+    MAX_REDDIT_SUMMARY_TOKENS = 20_000
+    MAX_LEARNING_INSIGHTS_TOKENS = 12_000
+    SCREENING_TOKEN_LIMIT = 80_000
 
     def __init__(self, preferences: ValueScreeningPreferences):
         self.preferences = preferences
         self.output_dir = Path("outputs/undervalued_analysis")
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.model_id = "gpt-4.1"
+        self.logs_dir = Path("logs")
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.log_file_path: Optional[Path] = None
+        self.logger: Optional[logging.Logger] = None
+        self.model_id = "gpt-5.4-nano-2026-03-17"
+
+        # Initialize database
+        self.db = StockDatabaseManager()
+        self.perf_db = PerformanceTrackingManager()  # For learning insights
+        self.current_run_id: Optional[int] = None
 
         # Instantiate reusable tool objects
         self._stock_price_tool = StockPriceDataTool()
@@ -108,6 +131,8 @@ class UndervaluedAnalysisFlow:
         self._token_encoder = self._load_token_encoder()
         self._chart_paths: list[str] = []
         self._reddit_headers = {"User-Agent": "stock-analysis-bot/1.0"}
+        self._symbol_resolution_cache: Dict[str, str] = {}
+        self._candidate_metrics_cache: Dict[str, Dict[str, Any]] = {}
 
         shared_tools = [
             self.get_stock_price_history,
@@ -120,6 +145,11 @@ class UndervaluedAnalysisFlow:
             self.get_options_chain_snapshot,
             self.create_metric_chart,
             self.summarize_context_tool,
+            # Database tools for historical context
+            self.search_past_finds,
+            self.get_ticker_history,
+            self.get_similar_stocks,
+            self.get_recent_discoveries,
         ]
         shared_model = OpenAIChat(
             id=self.model_id,
@@ -127,7 +157,9 @@ class UndervaluedAnalysisFlow:
             max_completion_tokens=10000,
         )
 
-        screening_instructions = load_prompt("screening_agent_instructions").strip().split('\n')
+        screening_instructions = (
+            load_prompt("screening_agent_instructions").strip().split("\n")
+        )
         self.screening_agent = Agent(
             name="Value Screening Specialist",
             model=shared_model,
@@ -139,7 +171,9 @@ class UndervaluedAnalysisFlow:
             debug_mode=True,
         )
 
-        turnaround_instructions = load_prompt("turnaround_agent_instructions").strip().split('\n')
+        turnaround_instructions = (
+            load_prompt("turnaround_agent_instructions").strip().split("\n")
+        )
         self.turnaround_agent = Agent(
             name="Turnaround Potential Analyst",
             model=shared_model,
@@ -151,10 +185,14 @@ class UndervaluedAnalysisFlow:
             debug_mode=True,
         )
 
-        reddit_instructions = load_prompt("reddit_sentiment_agent_instructions").strip().split('\n')
+        reddit_instructions = (
+            load_prompt("reddit_sentiment_agent_instructions").strip().split("\n")
+        )
         self.reddit_sentiment_agent = Agent(
             name="BayStreet Reddit Scout",
-            model=OpenAIChat(id="gpt-4.1", temperature=1, max_completion_tokens=5000),
+            model=OpenAIChat(
+                id=self.model_id, temperature=1, max_completion_tokens=5000
+            ),
             instructions=reddit_instructions,
             tools=[self.reddit_sentiment_scan],
             markdown=True,
@@ -162,6 +200,47 @@ class UndervaluedAnalysisFlow:
             timezone_identifier="America/New_York",
             debug_mode=True,
         )
+
+    def _configure_agno_debug_logging(self) -> Path:
+        """Configure Agno to write debug logs to a timestamped file and stdout."""
+        timestamp = datetime.now(ny_timezone).strftime("%H%M%S_%Y%m%d")
+        log_file_path = self.logs_dir / f"{timestamp}.log"
+        logger_name = f"agno-undervalued-{timestamp}"
+
+        custom_logger = logging.getLogger(logger_name)
+        custom_logger.handlers.clear()
+        custom_logger.setLevel(logging.DEBUG)
+        custom_logger.propagate = False
+
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+
+        file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+
+        stream_handler = logging.StreamHandler()
+        stream_handler.setLevel(logging.DEBUG)
+        stream_handler.setFormatter(formatter)
+
+        custom_logger.addHandler(file_handler)
+        custom_logger.addHandler(stream_handler)
+
+        configure_agno_logging(
+            custom_default_logger=custom_logger,
+            custom_agent_logger=custom_logger,
+            custom_team_logger=custom_logger,
+            custom_workflow_logger=custom_logger,
+        )
+
+        self.logger = custom_logger
+        custom_logger.info(
+            "Agno debug logging configured for undervalued analysis: %s",
+            log_file_path,
+        )
+        self.log_file_path = log_file_path
+        return log_file_path
 
     def _load_token_encoder(self):
         """Load the tokenizer for the configured OpenAI model."""
@@ -193,28 +272,159 @@ class UndervaluedAnalysisFlow:
         payload = {"source": source, "error": error_message, "metadata": metadata}
         return self._format_json(payload)
 
+    def _resolve_yf_symbol(self, symbol: str) -> str:
+        """Return the yfinance-resolvable ticker for a symbol.
+
+        Canadian tickers are often found on Reddit without the Yahoo suffix.
+        Score candidates against actual Yahoo quote/history data and use a few
+        known ambiguous aliases observed in live runs.
+        """
+        import yfinance as yf
+
+        raw_symbol = (symbol or "").strip().upper()
+        if not raw_symbol:
+            return raw_symbol
+
+        if raw_symbol in self._symbol_resolution_cache:
+            return self._symbol_resolution_cache[raw_symbol]
+
+        aliases = {
+            "ARC": "ARX.TO",
+            "ARX": "ARX.TO",
+            "QIMC": "QIMC.CN",
+            "TNZ": "TNZ.TO",
+            "HHE": "HHE.CN",
+            "CVVY": "CVVY.TO",
+        }
+        if raw_symbol in aliases:
+            self._symbol_resolution_cache[raw_symbol] = aliases[raw_symbol]
+            return aliases[raw_symbol]
+
+        if "." in raw_symbol or ":" in raw_symbol:
+            self._symbol_resolution_cache[raw_symbol] = raw_symbol
+            return raw_symbol
+
+        candidates = [
+            f"{raw_symbol}.TO",
+            f"{raw_symbol}.V",
+            f"{raw_symbol}.CN",
+            f"{raw_symbol}.NE",
+            raw_symbol,
+        ]
+        best_candidate = raw_symbol
+        best_score = -1.0
+        for candidate in candidates:
+            try:
+                ticker = yf.Ticker(candidate)
+                hist = ticker.history(period="1mo")
+                if not hist.empty:
+                    info = ticker.info or {}
+                    market_cap = info.get("marketCap") or 0
+                    volume = info.get("volume") or info.get("averageVolume") or 0
+                    score = len(hist) + min(float(volume or 0) / 1_000_000, 10)
+                    if market_cap:
+                        score += 5
+                    if candidate.endswith((".TO", ".V", ".CN", ".NE")):
+                        score += 2
+                    if score > best_score:
+                        best_score = score
+                        best_candidate = candidate
+            except Exception:
+                continue
+
+        if best_candidate != raw_symbol:
+            logging.getLogger(__name__).info(
+                "yfinance ticker resolved: %s -> %s", raw_symbol, best_candidate
+            )
+        self._symbol_resolution_cache[raw_symbol] = best_candidate
+        return best_candidate
+
+    def _compact_search_results(
+        self, results: Any, max_items: int = 5, max_snippet_chars: int = 280
+    ) -> Any:
+        """Reduce search payloads before they are fed back into the model."""
+        raw_items = None
+        if hasattr(results, "results"):
+            raw_items = getattr(results, "results")
+        elif isinstance(results, dict):
+            raw_items = (
+                results.get("results") or results.get("data") or results.get("items")
+            )
+        elif isinstance(results, list):
+            raw_items = results
+
+        if raw_items is None:
+            return self._truncate_for_context(str(results), 2_000)
+
+        compact_items: List[Dict[str, Any]] = []
+        for item in list(raw_items)[:max_items]:
+            if isinstance(item, dict):
+                title = item.get("title") or item.get("name")
+                url = item.get("url") or item.get("link")
+                snippet = (
+                    item.get("text")
+                    or item.get("content")
+                    or item.get("raw_content")
+                    or item.get("snippet")
+                )
+                published = item.get("published_date") or item.get("published")
+            else:
+                title = getattr(item, "title", None)
+                url = getattr(item, "url", None)
+                snippet = (
+                    getattr(item, "text", None)
+                    or getattr(item, "content", None)
+                    or getattr(item, "raw_content", None)
+                    or getattr(item, "snippet", None)
+                )
+                published = getattr(item, "published_date", None) or getattr(
+                    item, "published", None
+                )
+
+            compact_items.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "published": published,
+                    "snippet": (snippet or "")[:max_snippet_chars],
+                }
+            )
+
+        return compact_items
+
     def get_stock_price_history(self, symbol: str, period: str = "1y") -> str:
         """Return historical closing prices for a symbol and period."""
+        symbol = self._resolve_yf_symbol(symbol)
         try:
             prices = self._stock_price_tool.run(symbol, period)
         except Exception as exc:  # pragma: no cover - depends on API
             return self._format_error(
                 "get_stock_price_history", symbol=symbol, period=period, error=str(exc)
             )
+        recent_prices = prices[-60:] if isinstance(prices, list) else []
         payload = {
             "symbol": symbol.upper(),
             "period": period,
-            "close_prices": prices,
+            "close_prices": recent_prices,
+            "total_points": len(prices) if isinstance(prices, list) else 0,
+            "first_close": prices[0] if isinstance(prices, list) and prices else None,
+            "last_close": prices[-1] if isinstance(prices, list) and prices else None,
+            "period_high": max(prices) if isinstance(prices, list) and prices else None,
+            "period_low": min(prices) if isinstance(prices, list) and prices else None,
+            "note": "close_prices contains only the most recent 60 closes to keep tool output compact.",
             "retrieved_at": datetime.now(ny_timezone).isoformat(),
         }
         return self._format_json(payload)
 
     def get_company_profile(self, symbol: str) -> str:
         """Provide key company identifiers and valuation metrics."""
+        symbol = self._resolve_yf_symbol(symbol)
         try:
             info = self._company_info_tool.run(symbol)
         except Exception as exc:  # pragma: no cover - depends on API
-            return self._format_error("get_company_profile", symbol=symbol, error=str(exc))
+            return self._format_error(
+                "get_company_profile", symbol=symbol, error=str(exc)
+            )
 
         if isinstance(info, list) and len(info) >= 6:
             payload = {
@@ -233,17 +443,24 @@ class UndervaluedAnalysisFlow:
         return self._format_json(payload)
 
     def get_financial_facts(self, symbol: str) -> str:
-        """Return QuickFS-style financial statement data for a symbol."""
+        """Return financial statement data and hard-screen ratios for a symbol."""
+        symbol = self._resolve_yf_symbol(symbol)
         try:
             data = self._financial_report_tool.run(symbol)
         except Exception as exc:  # pragma: no cover - depends on API
-            return self._format_error("get_financial_facts", symbol=symbol, error=str(exc))
+            return self._format_error(
+                "get_financial_facts", symbol=symbol, error=str(exc)
+            )
 
         metrics_to_track = [
             "revenue",
             "net_income",
             "operating_cash_flow",
             "free_cash_flow",
+            "total_debt",
+            "shareholders_equity",
+            "current_assets",
+            "current_liabilities",
         ]
         metric_summaries: Dict[str, Dict[str, Any]] = {}
 
@@ -272,18 +489,33 @@ class UndervaluedAnalysisFlow:
 
         payload = {
             "symbol": symbol.upper(),
+            "source": data.get("source") if isinstance(data, dict) else None,
             "condensed_metrics": metric_summaries,
+            "screening_metrics": {
+                "current_price": data.get("current_price") if isinstance(data, dict) else None,
+                "market_cap": data.get("market_cap") if isinstance(data, dict) else None,
+                "price_to_earnings": data.get("price_to_earnings") if isinstance(data, dict) else None,
+                "forward_pe": data.get("forward_pe") if isinstance(data, dict) else None,
+                "price_to_book": data.get("price_to_book") if isinstance(data, dict) else None,
+                "current_ratio": data.get("current_ratio") if isinstance(data, dict) else None,
+                "debt_to_equity": data.get("debt_to_equity") if isinstance(data, dict) else None,
+                "volume": data.get("volume") if isinstance(data, dict) else None,
+            },
             "note": "Raw historical tables trimmed to last 3 periods per metric to control token usage.",
             "retrieved_at": datetime.now(ny_timezone).isoformat(),
         }
+        self._candidate_metrics_cache[symbol.upper()] = payload["screening_metrics"]
         return self._format_json(payload)
 
     def get_real_time_quote(self, symbol: str) -> str:
         """Fetch intraday price, volume, and market cap."""
+        symbol = self._resolve_yf_symbol(symbol)
         try:
             price, volume, market_cap = self._real_time_quote_tool.run(symbol)
         except Exception as exc:  # pragma: no cover - depends on API
-            return self._format_error("get_real_time_quote", symbol=symbol, error=str(exc))
+            return self._format_error(
+                "get_real_time_quote", symbol=symbol, error=str(exc)
+            )
 
         payload = {
             "symbol": symbol.upper(),
@@ -313,11 +545,13 @@ class UndervaluedAnalysisFlow:
         try:
             results = self.web_search_tool.run(query)
         except Exception as exc:  # pragma: no cover - depends on API
-            return self._format_error("search_market_events", query=query, error=str(exc))
+            return self._format_error(
+                "search_market_events", query=query, error=str(exc)
+            )
 
         payload = {
             "query": query,
-            "results": results,
+            "results": self._compact_search_results(results),
             "retrieved_at": datetime.now(ny_timezone).isoformat(),
         }
         return self._format_json(payload)
@@ -327,11 +561,13 @@ class UndervaluedAnalysisFlow:
         try:
             results = self._tavily_tool.run(query)
         except Exception as exc:  # pragma: no cover - depends on API
-            return self._format_error("search_global_research", query=query, error=str(exc))
+            return self._format_error(
+                "search_global_research", query=query, error=str(exc)
+            )
 
         payload = {
             "query": query,
-            "results": results,
+            "results": self._compact_search_results(results),
             "retrieved_at": datetime.now(ny_timezone).isoformat(),
         }
         return self._format_json(payload)
@@ -345,7 +581,9 @@ class UndervaluedAnalysisFlow:
         for subreddit in subs:
             url = f"https://www.reddit.com/r/{subreddit}/search.json"
             params = {
-                "q": f"{normalized_query} TSX" if subreddit == "Baystreetbets" else normalized_query,
+                "q": f"{normalized_query} TSX"
+                if subreddit == "Baystreetbets"
+                else normalized_query,
                 "restrict_sr": "1",
                 "sort": "new",
                 "limit": str(max_posts // len(subs)),
@@ -433,7 +671,9 @@ class UndervaluedAnalysisFlow:
         batch_summaries: List[Dict[str, Any]] = []
         if collected_posts:
             try:
-                summary_model = OpenAIChat(id="gpt-4.1", temperature=0.4, max_completion_tokens=2000)
+                summary_model = OpenAIChat(
+                    id=self.model_id, temperature=1, max_completion_tokens=4000
+                )
                 summarizer = Agent(model=summary_model, markdown=True)
                 for idx in range(0, len(collected_posts), 50):
                     batch = collected_posts[idx : idx + 50]
@@ -441,6 +681,8 @@ class UndervaluedAnalysisFlow:
                     summary = summarizer.run(
                         f"Summarize Reddit posts batch {idx // 50 + 1}. Highlight emerging tickers, "
                         "catalysts, sentiment, and risks.\n\n"
+                        "IMPORTANT: For each ticker mentioned, include the Reddit post URL (permalink) "
+                        "so it can be cited in the final report. Format: [Ticker mentioned in r/subreddit](permalink)\n\n"
                         f"{batch_payload}"
                     )
                     batch_summaries.append(
@@ -503,8 +745,30 @@ class UndervaluedAnalysisFlow:
             "symbol": symbol.upper(),
             "requested_expiration": expiration_date,
             "actual_expiration": actual_expiration,
-            "calls": calls,
-            "puts": puts,
+            "calls": [
+                {
+                    "strike": row.get("strike"),
+                    "lastPrice": row.get("lastPrice"),
+                    "bid": row.get("bid"),
+                    "ask": row.get("ask"),
+                    "volume": row.get("volume"),
+                    "openInterest": row.get("openInterest"),
+                    "impliedVolatility": row.get("impliedVolatility"),
+                }
+                for row in (calls or [])[:8]
+            ],
+            "puts": [
+                {
+                    "strike": row.get("strike"),
+                    "lastPrice": row.get("lastPrice"),
+                    "bid": row.get("bid"),
+                    "ask": row.get("ask"),
+                    "volume": row.get("volume"),
+                    "openInterest": row.get("openInterest"),
+                    "impliedVolatility": row.get("impliedVolatility"),
+                }
+                for row in (puts or [])[:8]
+            ],
             "retrieved_at": datetime.now(ny_timezone).isoformat(),
         }
         return self._format_json(payload)
@@ -528,12 +792,662 @@ class UndervaluedAnalysisFlow:
         return self._format_json(payload)
 
     # -------------------------------------------------------------------------
+    # Database tool functions
+    # -------------------------------------------------------------------------
+
+    def search_past_finds(
+        self,
+        query: str = "",
+        exchange: str = "",
+        sector: str = "",
+        min_confidence: float = 5.0,
+        days_ago: int = 180,
+    ) -> str:
+        """Search historical stock discoveries from past analyses."""
+        try:
+            finds = self.db.search_past_finds(
+                query=query if query else None,
+                exchange=exchange if exchange else None,
+                sector=sector if sector else None,
+                min_confidence=min_confidence,
+                days_ago=days_ago,
+                limit=20,
+            )
+
+            return self.db.format_for_agent(finds)
+
+        except Exception as exc:
+            return self._format_error(
+                "search_past_finds",
+                query=query,
+                exchange=exchange,
+                sector=sector,
+                error=str(exc),
+            )
+
+    def get_ticker_history(self, ticker: str) -> str:
+        """Get complete analysis history for a specific ticker."""
+        try:
+            history = self.db.get_ticker_history(ticker)
+            reddit_mentions = self.db.get_reddit_mentions(ticker, days=90)
+
+            payload = {
+                "ticker": ticker.upper(),
+                "total_analyses": len(history),
+                "past_finds": [
+                    {
+                        "discovered_at": h.get("discovered_at"),
+                        "confidence_score": h.get("confidence_score"),
+                        "current_price": h.get("current_price"),
+                        "investment_thesis": h.get("investment_thesis"),
+                        "exchange": h.get("exchange"),
+                    }
+                    for h in history[:5]  # Last 5 analyses
+                ],
+                "reddit_mentions_count": len(reddit_mentions),
+                "recent_reddit_sentiment": [
+                    {
+                        "subreddit": r.get("subreddit"),
+                        "title": r.get("title"),
+                        "sentiment": r.get("sentiment"),
+                        "score": r.get("score"),
+                        "mentioned_at": r.get("mentioned_at"),
+                    }
+                    for r in reddit_mentions[:3]
+                ],
+                "retrieved_at": datetime.now(ny_timezone).isoformat(),
+            }
+
+            return self._format_json(payload)
+
+        except Exception as exc:
+            return self._format_error(
+                "get_ticker_history", ticker=ticker, error=str(exc)
+            )
+
+    def get_similar_stocks(self, ticker: str, sector: str = "") -> str:
+        """Find similar stocks based on sector/industry from past research."""
+        try:
+            similar = self.db.get_similar_stocks(
+                ticker, sector=sector if sector else None, limit=10
+            )
+
+            payload = {
+                "reference_ticker": ticker.upper(),
+                "similar_stocks": [
+                    {
+                        "ticker": s.get("ticker"),
+                        "company_name": s.get("company_name"),
+                        "sector": s.get("sector"),
+                        "industry": s.get("industry"),
+                        "confidence_score": s.get("confidence_score"),
+                        "exchange": s.get("exchange"),
+                    }
+                    for s in similar
+                ],
+                "total": len(similar),
+                "retrieved_at": datetime.now(ny_timezone).isoformat(),
+            }
+
+            return self._format_json(payload)
+
+        except Exception as exc:
+            return self._format_error(
+                "get_similar_stocks", ticker=ticker, sector=sector, error=str(exc)
+            )
+
+    def get_recent_discoveries(
+        self, days: int = 30, min_confidence: float = 6.0
+    ) -> str:
+        """Get recent high-quality stock discoveries."""
+        try:
+            discoveries = self.db.get_recent_discoveries(
+                days=days, min_confidence=min_confidence
+            )
+
+            payload = {
+                "period_days": days,
+                "min_confidence": min_confidence,
+                "discoveries": [
+                    {
+                        "ticker": d.get("ticker"),
+                        "company_name": d.get("company_name"),
+                        "exchange": d.get("exchange"),
+                        "sector": d.get("sector"),
+                        "confidence_score": d.get("confidence_score"),
+                        "discovery_source": d.get("discovery_source"),
+                        "investment_thesis": d.get("investment_thesis", "")[:200],
+                        "discovered_at": d.get("discovered_at"),
+                    }
+                    for d in discoveries
+                ],
+                "total": len(discoveries),
+                "retrieved_at": datetime.now(ny_timezone).isoformat(),
+            }
+
+            return self._format_json(payload)
+
+        except Exception as exc:
+            return self._format_error(
+                "get_recent_discoveries",
+                days=days,
+                min_confidence=min_confidence,
+                error=str(exc),
+            )
+
+    def _split_resolved_symbol(self, symbol: str) -> tuple[str, str, str]:
+        """Return base ticker, exchange suffix, and DB exchange from a Yahoo symbol."""
+        resolved = self._resolve_yf_symbol(symbol)
+        if "." in resolved:
+            ticker, suffix = resolved.split(".", 1)
+        else:
+            ticker, suffix = resolved, ""
+        exchange = "TSX" if suffix in {"TO", "V", "CN", "NE"} else "US"
+        return ticker.upper(), suffix.upper(), exchange
+
+    def _normalize_report_ticker(self, ticker_info: Dict[str, Any]) -> Dict[str, str]:
+        """Canonicalize a ticker extracted from model output before validation."""
+        raw_ticker = str(ticker_info.get("ticker") or "").strip().upper()
+        raw_suffix = str(ticker_info.get("exchange_suffix") or "").strip().upper()
+        if raw_suffix and "." not in raw_ticker:
+            raw_symbol = f"{raw_ticker}.{raw_suffix}"
+        else:
+            raw_symbol = raw_ticker
+        ticker, suffix, exchange = self._split_resolved_symbol(raw_symbol)
+        return {
+            "ticker": ticker,
+            "exchange_suffix": suffix,
+            "exchange": exchange,
+            "resolved_symbol": f"{ticker}.{suffix}" if suffix else ticker,
+            "company_name": str(ticker_info.get("company_name") or "").strip(),
+        }
+
+    def _extract_candidate_tickers_from_report(self, report: str) -> list[dict]:
+        """Extract likely stock tickers from headings/bold entries only."""
+        candidates: list[dict] = []
+        seen: set[str] = set()
+        ignore = {
+            "CEO",
+            "CFO",
+            "CAD",
+            "USD",
+            "EPS",
+            "EBITDA",
+            "P/E",
+            "VHI",
+            "RSI",
+            "ETF",
+            "ET",
+        }
+        patterns = [
+            re.compile(
+                r"^\s*(?:#{2,4}\s*)?(?:\d+\.\s*)?\*\*([^(\n]{2,80})"
+                r"\((?:([A-Z]{2,5}):)?([A-Z]{1,6}(?:\.[A-Z]{1,3})?)\)\*\*",
+                re.MULTILINE,
+            ),
+            re.compile(
+                r"^\s*(?:#{2,4}\s*)?(?:\d+\.\s*)?([^(\n]{2,80})"
+                r"\((?:([A-Z]{2,5}):)?([A-Z]{1,6}(?:\.[A-Z]{1,3})?)\)",
+                re.MULTILINE,
+            ),
+        ]
+
+        for pattern in patterns:
+            for match in pattern.finditer(report):
+                company_name = match.group(1).strip(" -*#")
+                exchange = match.group(2) or ""
+                ticker_full = match.group(3).strip().upper()
+                if ticker_full in ignore:
+                    continue
+                if "." in ticker_full:
+                    ticker, suffix = ticker_full.split(".", 1)
+                else:
+                    ticker = ticker_full
+                    suffix = "TO" if exchange == "TSX" else ""
+                key = f"{ticker}.{suffix}" if suffix else ticker
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(
+                    {
+                        "ticker": ticker,
+                        "exchange_suffix": suffix,
+                        "company_name": company_name,
+                    }
+                )
+
+        return candidates
+
+    def _get_live_screening_metrics(self, symbol: str) -> Dict[str, Any]:
+        """Fetch quote/profile/financial metrics used for hard screening."""
+        resolved = self._resolve_yf_symbol(symbol)
+        cache_key = resolved.upper()
+        if cache_key in self._candidate_metrics_cache:
+            return self._candidate_metrics_cache[cache_key]
+
+        metrics: Dict[str, Any] = {"resolved_symbol": resolved}
+        try:
+            price, volume, market_cap = self._real_time_quote_tool.run(resolved)
+            metrics.update(
+                {
+                    "current_price": price,
+                    "volume": volume,
+                    "market_cap": market_cap,
+                }
+            )
+        except Exception as exc:
+            metrics["quote_error"] = str(exc)
+
+        try:
+            profile = self._company_info_tool.run(resolved)
+            if isinstance(profile, list) and len(profile) >= 6:
+                metrics.update(
+                    {
+                        "company_name": profile[0],
+                        "sector": profile[1],
+                        "industry": profile[2],
+                        "market_cap": metrics.get("market_cap") or profile[3],
+                        "forward_pe": profile[4],
+                    }
+                )
+        except Exception as exc:
+            metrics["profile_error"] = str(exc)
+
+        try:
+            facts = self._financial_report_tool.run(resolved)
+            if isinstance(facts, dict):
+                metrics.update(
+                    {
+                        "market_cap": metrics.get("market_cap")
+                        or facts.get("market_cap"),
+                        "current_price": metrics.get("current_price")
+                        or facts.get("current_price"),
+                        "volume": metrics.get("volume") or facts.get("volume"),
+                        "price_to_earnings": facts.get("price_to_earnings"),
+                        "forward_pe": metrics.get("forward_pe")
+                        or facts.get("forward_pe"),
+                        "price_to_book": facts.get("price_to_book"),
+                        "current_ratio": facts.get("current_ratio"),
+                        "debt_to_equity": facts.get("debt_to_equity"),
+                    }
+                )
+        except Exception as exc:
+            metrics["financial_error"] = str(exc)
+
+        self._candidate_metrics_cache[cache_key] = metrics
+        return metrics
+
+    def _screen_candidate_metrics(
+        self, symbol: str, metrics: Dict[str, Any]
+    ) -> tuple[bool, list[str]]:
+        """Apply non-negotiable numeric filters before persistence/tracking."""
+        prefs = self.preferences
+        failures: list[str] = []
+        price = metrics.get("current_price")
+        market_cap = metrics.get("market_cap")
+        volume = metrics.get("volume")
+        pe_ratio = metrics.get("price_to_earnings") or metrics.get("forward_pe")
+        current_ratio = metrics.get("current_ratio")
+        debt_to_equity = metrics.get("debt_to_equity")
+
+        if price is None:
+            failures.append("missing current price")
+        elif price < prefs.min_price or price > prefs.max_price:
+            failures.append(
+                f"price {price:.2f} outside {prefs.min_price:.2f}-{prefs.max_price:.2f}"
+            )
+
+        if market_cap is None:
+            failures.append("missing market cap")
+        elif market_cap < prefs.min_market_cap:
+            failures.append(
+                f"market cap {market_cap:,.0f} below {prefs.min_market_cap:,.0f}"
+            )
+
+        if volume is None:
+            failures.append("missing volume")
+        elif volume < prefs.min_volume:
+            failures.append(f"volume {volume:,.0f} below {prefs.min_volume:,.0f}")
+
+        if pe_ratio is None:
+            failures.append("missing P/E")
+        elif pe_ratio > prefs.max_pe:
+            failures.append(f"P/E {pe_ratio:.2f} above {prefs.max_pe:.2f}")
+
+        if current_ratio is None:
+            failures.append("missing current ratio")
+        elif current_ratio < prefs.min_current_ratio:
+            failures.append(
+                f"current ratio {current_ratio:.2f} below {prefs.min_current_ratio:.2f}"
+            )
+
+        if debt_to_equity is None:
+            failures.append("missing debt/equity")
+        elif debt_to_equity > prefs.max_debt_equity:
+            failures.append(
+                f"debt/equity {debt_to_equity:.2f} above {prefs.max_debt_equity:.2f}"
+            )
+
+        return not failures, failures
+
+    def _hard_screen_report_candidates(self, report: str) -> tuple[str, list[dict]]:
+        """Append deterministic pass/fail results for tickers named in a report."""
+        extracted = self._extract_candidate_tickers_from_report(report)
+        if not extracted:
+            return report, []
+
+        accepted: list[dict] = []
+        review_lines = [
+            "## Code-Level Hard Screen Review",
+            "The following pass/fail status was computed from live market-data tools.",
+        ]
+
+        for ticker_info in extracted:
+            normalized = self._normalize_report_ticker(ticker_info)
+            resolved_symbol = normalized["resolved_symbol"]
+            metrics = self._get_live_screening_metrics(resolved_symbol)
+            passed, failures = self._screen_candidate_metrics(resolved_symbol, metrics)
+            status = "PASS" if passed else "REJECT"
+            review_lines.append(
+                "- "
+                f"{status}: {resolved_symbol} | "
+                f"price={metrics.get('current_price')} | "
+                f"market_cap={metrics.get('market_cap')} | "
+                f"volume={metrics.get('volume')} | "
+                f"pe={metrics.get('price_to_earnings') or metrics.get('forward_pe')} | "
+                f"current_ratio={metrics.get('current_ratio')} | "
+                f"debt_to_equity={metrics.get('debt_to_equity')} | "
+                f"reason={'; '.join(failures) if failures else 'meets hard filters'}"
+            )
+            if passed:
+                normalized["metrics"] = metrics
+                accepted.append(normalized)
+
+        return f"{report.rstrip()}\n\n" + "\n".join(review_lines), accepted
+
+    async def _extract_tickers_with_llm(self, report: str) -> list[dict]:
+        """Use LLM to extract ticker symbols and metadata from report.
+
+        Returns list of dicts with ticker, company_name, and section_content.
+        """
+        import json
+        import os
+
+        from openai import AsyncOpenAI
+
+        extraction_prompt = f"""Extract all stock ticker symbols from this report.
+For each ticker, provide:
+1. ticker: The stock symbol (e.g., "MDA", "CVO")
+2. exchange_suffix: The exchange suffix if present (e.g., "TO", "V", "")
+3. company_name: The full company name
+
+Return ONLY a JSON array, no other text:
+[{{"ticker": "MDA", "exchange_suffix": "TO", "company_name": "MDA Space Ltd."}}, ...]
+
+Report:
+{report[:4000]}
+"""
+
+        try:
+            client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            response = await client.chat.completions.create(
+                model=self.model_id,
+                temperature=1,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful assistant that extracts ticker symbols from stock reports.",
+                    },
+                    {"role": "user", "content": extraction_prompt},
+                ],
+            )
+
+            content = response.choices[0].message.content.strip()
+
+            # Clean response - remove markdown code fences if present
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
+
+            tickers = json.loads(content)
+            return tickers if isinstance(tickers, list) else []
+
+        except Exception as e:
+            print(f"  LLM ticker extraction failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return []
+
+    async def _save_stock_finds_from_report(self, report: str) -> int:
+        """Parse final report and save stock finds to database.
+
+        Returns number of stocks saved.
+        """
+        import re
+        from datetime import datetime
+
+        if not report or not self.current_run_id:
+            return 0
+
+        saved_count = 0
+
+        print("  Extracting candidate tickers from report...")
+        ticker_list = self._extract_candidate_tickers_from_report(report)
+
+        if not ticker_list:
+            print("  Regex extraction found no final-report tickers; trying LLM fallback...")
+            ticker_list = await self._extract_tickers_with_llm(report)
+
+        if not ticker_list:
+            print("  No ticker patterns found in report")
+            return 0
+
+        # Process each ticker
+        for ticker_info in ticker_list:
+            normalized = self._normalize_report_ticker(ticker_info)
+            ticker = normalized["ticker"]
+            exchange_suffix = normalized["exchange_suffix"]
+            exchange = normalized["exchange"]
+            resolved_symbol = normalized["resolved_symbol"]
+            company_name = normalized.get("company_name", "")
+
+            metrics = self._get_live_screening_metrics(resolved_symbol)
+            passed, failures = self._screen_candidate_metrics(resolved_symbol, metrics)
+            if not passed:
+                print(
+                    f"  Skipping {resolved_symbol}: hard screen failed ({'; '.join(failures)})"
+                )
+                continue
+            if not company_name:
+                company_name = metrics.get("company_name") or resolved_symbol
+
+            # Find content section for this ticker in the report
+            ticker_full = resolved_symbol
+            search_pattern = re.escape(ticker_full)
+            ticker_match = re.search(search_pattern, report)
+
+            if ticker_match:
+                start_pos = ticker_match.end()
+                # Find next ticker or end of report
+                next_ticker_pos = len(report)
+                for next_info in ticker_list[ticker_list.index(ticker_info) + 1 :]:
+                    next_normalized = self._normalize_report_ticker(next_info)
+                    next_full = next_normalized["resolved_symbol"]
+                    next_match = re.search(re.escape(next_full), report[start_pos:])
+                    if next_match:
+                        next_ticker_pos = start_pos + next_match.start()
+                        break
+                content = report[start_pos:next_ticker_pos]
+            else:
+                content = report  # Use whole report if specific section not found
+
+            try:
+                # Extract confidence score - look for patterns like "Confidence: 8.5" or "Score: 8/10"
+                confidence_score = None
+                confidence_patterns = [
+                    r"confidence[:\s]+(\d+(?:\.\d+)?)",
+                    r"score[:\s]+(\d+(?:\.\d+)?)",
+                    r"rating[:\s]+(\d+(?:\.\d+)?)",
+                ]
+                for pattern in confidence_patterns:
+                    conf_match = re.search(pattern, content, re.IGNORECASE)
+                    if conf_match:
+                        confidence_score = float(conf_match.group(1))
+                        break
+                if confidence_score is None:
+                    confidence_score = 5.0
+
+                # Extract price - matches "$6.78" or "Price: 6.78"
+                price_match = re.search(
+                    r"(?:price|trading)[:\s]+\$?([\d,]+\.?\d*)", content, re.IGNORECASE
+                )
+                current_price = (
+                    float(price_match.group(1).replace(",", ""))
+                    if price_match
+                    else None
+                )
+                current_price = current_price or metrics.get("current_price")
+
+                # Extract market cap - matches "$650.9M" or "Mkt Cap: $650.9M"
+                mcap_match = re.search(
+                    r"(?:mkt\s+cap|market\s+cap)[:\s]+\$?([\d,]+\.?\d*)\s*([BMK])?",
+                    content,
+                    re.IGNORECASE,
+                )
+                market_cap = None
+                if mcap_match:
+                    value = float(mcap_match.group(1).replace(",", ""))
+                    multiplier = mcap_match.group(2)
+                    if multiplier == "B":
+                        market_cap = value * 1_000_000_000
+                    elif multiplier == "M":
+                        market_cap = value * 1_000_000
+                    elif multiplier == "K":
+                        market_cap = value * 1_000
+                    else:
+                        market_cap = value
+                market_cap = market_cap or metrics.get("market_cap")
+
+                # Extract P/E ratio
+                pe_match = re.search(
+                    r"P/E[:\s]+(?:\(fwd\)[:\s]+)?([\d,]+\.?\d*)", content, re.IGNORECASE
+                )
+                pe_ratio = (
+                    float(pe_match.group(1).replace(",", "")) if pe_match else None
+                )
+                pe_ratio = pe_ratio or metrics.get("price_to_earnings") or metrics.get(
+                    "forward_pe"
+                )
+
+                # Extract sector/industry from content or company name
+                sector_match = re.search(
+                    r"sector[:\s]+([^\n]+)", content, re.IGNORECASE
+                )
+                sector = (
+                    sector_match.group(1).strip()
+                    if sector_match
+                    else metrics.get("sector")
+                )
+
+                industry_match = re.search(
+                    r"industry[:\s]+([^\n]+)", content, re.IGNORECASE
+                )
+                industry = (
+                    industry_match.group(1).strip()
+                    if industry_match
+                    else metrics.get("industry")
+                )
+
+                # Extract investment thesis - look for Reddit catalyst or key points
+                thesis_parts = []
+
+                # Look for Reddit catalyst
+                catalyst_match = re.search(
+                    r"\*\*Reddit Catalyst:\*\*\s*([^\n]+)", content
+                )
+                if catalyst_match:
+                    thesis_parts.append(catalyst_match.group(1).strip())
+
+                # Get first few non-header lines as thesis
+                for line in content.split("\n")[:15]:
+                    line = line.strip()
+                    if (
+                        line
+                        and not line.startswith("#")
+                        and not line.startswith("**")
+                        and not line.startswith("-")
+                        and len(line) > 20
+                    ):
+                        thesis_parts.append(line)
+                        if len(thesis_parts) >= 2:
+                            break
+
+                investment_thesis = (
+                    " ".join(thesis_parts)[:500] if thesis_parts else company_name
+                )
+
+                # Create stock find record
+                find_data = {
+                    "analysis_run_id": self.current_run_id,
+                    "ticker": ticker,
+                    "company_name": company_name,
+                    "exchange": exchange,
+                    "sector": sector,
+                    "industry": industry,
+                    "discovery_source": "screening",
+                    "confidence_score": confidence_score,
+                    "current_price": current_price,
+                    "market_cap": market_cap,
+                    "pe_ratio": pe_ratio,
+                    "debt_to_equity": metrics.get("debt_to_equity"),
+                    "current_ratio": metrics.get("current_ratio"),
+                    "price_to_book": metrics.get("price_to_book"),
+                    "investment_thesis": investment_thesis,
+                    "discovered_at": datetime.now(ny_timezone).isoformat(),
+                }
+
+                # Save to database
+                self.db.save_stock_find(find_data)
+                saved_count += 1
+                print(
+                    f"  Saved {ticker} ({company_name}) - Price: ${current_price}, Confidence: {confidence_score}"
+                )
+
+            except Exception as e:
+                print(f"  Warning: Could not save {ticker}: {e}")
+                import traceback
+
+                traceback.print_exc()
+                continue
+
+        return saved_count
+
+    async def _trigger_portfolio_tracking(self, run_id: int):
+        """Initialize portfolio tracking for stocks from this analysis run."""
+        try:
+            from stockbot.flows.performance_tracker import PerformanceTrackerFlow
+
+            tracker = PerformanceTrackerFlow()
+            await tracker.initialize_holdings_from_run(run_id)
+            print(f"  Portfolio tracking initialized for run #{run_id}")
+
+        except Exception as e:
+            print(f"  Error initializing portfolio tracking: {e}")
+
+    # -------------------------------------------------------------------------
     # Analysis workflow
     # -------------------------------------------------------------------------
     async def run_value_screening(self) -> str:
         """Execute only the initial screening prompt."""
         reddit_summary = self._get_reddit_discovery_summary()
+        self._log_prompt_size("Reddit discovery summary", reddit_summary)
         screening_prompt = self._build_screening_prompt(reddit_summary)
+        self._log_prompt_size("Screening prompt", screening_prompt)
         screening_result = await self.screening_agent.arun(
             screening_prompt,
             images=self._build_image_payload(),
@@ -542,38 +1456,109 @@ class UndervaluedAnalysisFlow:
 
     async def execute_undervalued_analysis(self) -> str:
         """Run the screening and turnaround prompts sequentially."""
-        print("\nExecuting undervalued stock screening with Agno...")
-        screening_raw = await self.run_value_screening()
-        sanitized_screening = self._sanitize_agent_output(screening_raw)
-        screening_context = self._truncate_for_context(
-            sanitized_screening, self.SCREENING_TOKEN_LIMIT
-        )
-        await self.save_phase_output(
-            "initial_screening",
-            sanitized_screening,
-            "Initial value stock screening results",
-        )
+        log_file_path = self._configure_agno_debug_logging()
+        print(f"Agno debug logs: {log_file_path}")
 
-        print("\nAnalyzing turnaround potential...")
-        turnaround_prompt = self._build_turnaround_prompt(screening_context)
-        turnaround_result = await self.turnaround_agent.arun(
-            turnaround_prompt,
-            images=self._build_image_payload(),
+        # Create analysis run in database
+        self.current_run_id = self.db.create_analysis_run(
+            run_type="undervalued",
+            preferences=self.preferences.__dict__,
         )
-        turnaround_content = self._extract_content(turnaround_result)
-        await self.save_phase_output(
-            "turnaround_analysis",
-            turnaround_content,
-            "Detailed turnaround potential analysis",
-        )
+        print(f"\nStarted analysis run #{self.current_run_id}")
 
-        final_report = self.create_final_report(sanitized_screening, turnaround_content)
-        await self.save_phase_output(
-            "final_report",
-            final_report,
-            "Final undervalued stocks analysis",
-        )
-        return final_report
+        try:
+            print("\nExecuting undervalued stock screening with Agno...")
+            screening_raw = await self.run_value_screening()
+            sanitized_screening = self._sanitize_agent_output(screening_raw)
+            sanitized_screening, accepted_screening_candidates = (
+                self._hard_screen_report_candidates(sanitized_screening)
+            )
+            if accepted_screening_candidates:
+                print(
+                    "  Hard screen accepted "
+                    f"{len(accepted_screening_candidates)} report candidates"
+                )
+            screening_context = self._truncate_for_context(
+                sanitized_screening, self.SCREENING_TOKEN_LIMIT
+            )
+            await self.save_phase_output(
+                "initial_screening",
+                sanitized_screening,
+                "Initial value stock screening results",
+            )
+
+            print("\nAnalyzing turnaround potential...")
+            turnaround_prompt = self._build_turnaround_prompt(screening_context)
+            self._log_prompt_size("Turnaround input summary", screening_context)
+            self._log_prompt_size("Turnaround prompt", turnaround_prompt)
+            turnaround_result = await self.turnaround_agent.arun(
+                turnaround_prompt,
+                images=self._build_image_payload(),
+            )
+            turnaround_content = self._extract_content(turnaround_result)
+            await self.save_phase_output(
+                "turnaround_analysis",
+                turnaround_content,
+                "Detailed turnaround potential analysis",
+            )
+
+            final_report = self.create_final_report(
+                sanitized_screening, turnaround_content
+            )
+            await self.save_phase_output(
+                "final_report",
+                final_report,
+                "Final undervalued stocks analysis",
+            )
+
+            # Parse and save stock finds to database with LLM extraction
+            saved_count = await self._save_stock_finds_from_report(final_report)
+
+            # Save research reports to database
+            self.db.add_research_note(
+                ticker="ANALYSIS_RUN",
+                note_type="screening_report",
+                content=sanitized_screening[:5000],  # Truncate to fit in database
+                source="screening_agent",
+            )
+            self.db.add_research_note(
+                ticker="ANALYSIS_RUN",
+                note_type="turnaround_report",
+                content=turnaround_content[:5000],
+                source="turnaround_agent",
+            )
+            self.db.add_research_note(
+                ticker="ANALYSIS_RUN",
+                note_type="final_report",
+                content=final_report[:5000],
+                source="undervalued_flow",
+            )
+            print(f"  Saved research reports to database")
+
+            # Complete analysis run
+            self.db.complete_analysis_run(
+                run_id=self.current_run_id,
+                total_candidates=saved_count,
+                final_selections=saved_count,
+                status="completed",
+            )
+            print(
+                f"\nAnalysis run #{self.current_run_id} completed. Saved {saved_count} stock finds to database."
+            )
+
+            # Initialize portfolio tracking for all saved stocks
+            await self._trigger_portfolio_tracking(self.current_run_id)
+
+            return final_report
+
+        except Exception as e:
+            # Mark run as failed
+            if self.current_run_id:
+                self.db.complete_analysis_run(
+                    run_id=self.current_run_id,
+                    status="failed",
+                )
+            raise
 
     def _extract_content(self, response: Any) -> str:
         """Normalize Agno run responses to plain strings."""
@@ -652,11 +1637,17 @@ class UndervaluedAnalysisFlow:
                     if item.get("summary")
                 )
                 if combined:
-                    return combined
+                    return self._truncate_for_context(
+                        combined, self.MAX_REDDIT_SUMMARY_TOKENS
+                    )
             llm_summary = payload.get("llm_summary")
             if llm_summary:
-                return llm_summary
-            return discovery_json
+                return self._truncate_for_context(
+                    llm_summary, self.MAX_REDDIT_SUMMARY_TOKENS
+                )
+            return self._truncate_for_context(
+                discovery_json, self.MAX_REDDIT_SUMMARY_TOKENS
+            )
         except Exception:
             return ""
 
@@ -703,6 +1694,164 @@ class UndervaluedAnalysisFlow:
         )
         return truncated + notice
 
+    def _log_prompt_size(self, label: str, text: str) -> None:
+        """Emit token counts for large prompt sections into the run log."""
+        token_count = self._count_tokens(text)
+        message = f"{label} token count: {token_count:,}"
+        if self.logger is not None:
+            self.logger.debug(message)
+        else:
+            print(message)
+
+    def _build_learning_insights_section(self) -> tuple[str, str]:
+        """Build learning insights section and confidence adjustments from past performance.
+
+        Returns:
+            tuple[str, str]: (learning_insights_section, confidence_adjustments)
+        """
+        try:
+            # Get recent learning insights from performance database
+            insights_list = self.perf_db.get_recent_learning_insights(
+                days=90, min_confidence="medium"
+            )
+
+            if not insights_list:
+                return (
+                    "",
+                    "(add +1.5 for TSX stocks with Reddit validation, +0.5 for strong hiring)",
+                )
+
+            # Build the learning insights section
+            section_parts = ["\n## SELF-IMPROVEMENT: Learning from Past Performance\n"]
+            section_parts.append(
+                "**Apply these data-driven insights to improve stock selection:**\n"
+            )
+
+            # Get detailed stats
+            conf_stats = self.perf_db.get_confidence_calibration_stats(days=90)
+            source_stats = self.perf_db.get_source_performance_stats(days=90)
+            sector_stats = self.perf_db.get_sector_performance_stats(days=90)
+            catalyst_stats = (
+                self.perf_db.get_catalyst_stats(days=90)
+                if hasattr(self.perf_db, "get_catalyst_stats")
+                else {}
+            )
+
+            # Confidence Calibration
+            if conf_stats and conf_stats.get("total_analyzed", 0) > 0:
+                high_ret = conf_stats.get("high_conf_avg_return") or 0
+                med_ret = conf_stats.get("med_conf_avg_return") or 0
+                section_parts.append(
+                    f"\n### Confidence Calibration (based on {conf_stats['total_analyzed']} past picks)"
+                )
+                section_parts.append(
+                    f"- High confidence (>8.0) picks: **{high_ret:+.1f}%** avg return"
+                )
+                section_parts.append(
+                    f"- Medium confidence (5-8) picks: **{med_ret:+.1f}%** avg return"
+                )
+                if high_ret > med_ret + 5:
+                    section_parts.append(
+                        "- **Insight**: High confidence scoring is well-calibrated. Trust strong convictions."
+                    )
+                elif med_ret > high_ret:
+                    section_parts.append(
+                        "- **Insight**: Medium confidence picks are outperforming. Be more conservative with high scores."
+                    )
+
+            # Source Reliability
+            if source_stats:
+                section_parts.append("\n### Source Performance")
+                for source in source_stats[:3]:  # Top 3 sources
+                    section_parts.append(
+                        f"- **{source['discovery_source']}**: {source['avg_return']:+.1f}% avg return, "
+                        f"{source['win_rate']:.0f}% win rate ({source['pick_count']} picks)"
+                    )
+
+            # Sector Performance
+            if sector_stats:
+                section_parts.append("\n### Top Performing Sectors (Last 90 Days)")
+                for sector in sector_stats[:3]:  # Top 3 sectors
+                    section_parts.append(
+                        f"- **{sector['sector']}**: {sector['avg_return']:+.1f}% avg return ({sector['pick_count']} picks)"
+                    )
+                if sector_stats:
+                    section_parts.append(
+                        f"- **Insight**: Prioritize {sector_stats[0]['sector']} sector opportunities."
+                    )
+
+            # Catalyst Accuracy
+            if catalyst_stats and catalyst_stats.get("total_catalysts", 0) > 0:
+                section_parts.append("\n### Catalyst Realization Rates")
+                for cat_type, stats in catalyst_stats.get("by_type", {}).items():
+                    if stats.get("total", 0) > 0:
+                        rate = stats.get("realization_rate", 0) * 100
+                        impact = stats.get("avg_impact", 0)
+                        section_parts.append(
+                            f"- **{cat_type}**: {rate:.0f}% realization, {impact:+.1f}% avg price impact"
+                        )
+
+            # Actionable Recommendations from stored insights
+            recommendations = [
+                i for i in insights_list if i.get("actionable_recommendation")
+            ]
+            if recommendations:
+                section_parts.append("\n### Active Recommendations")
+                for rec in recommendations[:3]:
+                    section_parts.append(f"- {rec['actionable_recommendation']}")
+
+            section_parts.append(
+                "\n**Apply these learnings when scoring candidates.**\n"
+            )
+
+            # Build dynamic confidence adjustments
+            conf_adjustments = self._build_confidence_adjustments(
+                source_stats, sector_stats
+            )
+
+            return ("\n".join(section_parts), conf_adjustments)
+
+        except Exception as e:
+            print(f"  Warning: Could not load learning insights: {e}")
+            return (
+                "",
+                "(add +1.5 for TSX stocks with Reddit validation, +0.5 for strong hiring)",
+            )
+
+    def _build_confidence_adjustments(
+        self, source_stats: list, sector_stats: list
+    ) -> str:
+        """Build dynamic confidence adjustment rules based on historical performance."""
+        adjustments = ["(scoring adjustments based on past performance:"]
+
+        # Base adjustments
+        adjustments.append("+1.5 for TSX stocks with Reddit validation")
+        adjustments.append("+0.5 for strong hiring activity")
+
+        # Source-based adjustments
+        if source_stats:
+            best_source = source_stats[0] if source_stats else None
+            if best_source and best_source.get("win_rate", 0) > 70:
+                adjustments.append(
+                    f"+0.5 for {best_source['discovery_source']} discoveries (70%+ win rate)"
+                )
+
+        # Sector-based adjustments
+        if sector_stats:
+            best_sector = sector_stats[0] if sector_stats else None
+            worst_sector = sector_stats[-1] if len(sector_stats) > 2 else None
+            if best_sector and best_sector.get("avg_return", 0) > 15:
+                adjustments.append(
+                    f"+0.5 for {best_sector['sector']} sector (top performer)"
+                )
+            if worst_sector and worst_sector.get("avg_return", 0) < -5:
+                adjustments.append(
+                    f"-0.5 for {worst_sector['sector']} sector (underperforming)"
+                )
+
+        adjustments.append(")")
+        return " ".join(adjustments)
+
     def _build_screening_prompt(self, reddit_summary: str | None = None) -> str:
         """Generate the detailed screening instructions for the agent."""
         now = datetime.now(ny_timezone).strftime("%Y-%m-%d %H:%M:%S")
@@ -710,12 +1859,26 @@ class UndervaluedAnalysisFlow:
 
         reddit_section = ""
         if reddit_summary:
+            reddit_summary = self._truncate_for_context(
+                reddit_summary, self.MAX_REDDIT_SUMMARY_TOKENS
+            )
             reddit_section = f"\n\n## PRIORITY INTELLIGENCE: Recent Reddit Community Insights\n{reddit_summary}\n\n**CRITICAL**: Prioritize TSX-listed stocks and Canadian equities mentioned in r/Baystreetbets. These community-identified opportunities should be thoroughly investigated first, as they represent emerging value plays with potential retail momentum. Cross-reference Reddit catalysts with fundamental data to validate investment thesis.\n"
 
+        # Get learning insights from past performance
+        learning_insights_section, confidence_adjustments = (
+            self._build_learning_insights_section()
+        )
+        if learning_insights_section:
+            learning_insights_section = self._truncate_for_context(
+                learning_insights_section, self.MAX_LEARNING_INSIGHTS_TOKENS
+            )
+
         template = load_prompt("screening_prompt")
-        return template.format(
+        prompt = template.format(
             timestamp=now,
             reddit_section=reddit_section,
+            learning_insights_section=learning_insights_section,
+            confidence_adjustments=confidence_adjustments,
             max_price=f"{prefs.max_price:.2f}",
             min_price=f"{prefs.min_price:.2f}",
             min_volume=f"{prefs.min_volume:,.0f}",
@@ -723,16 +1886,62 @@ class UndervaluedAnalysisFlow:
             max_pe=f"{prefs.max_pe:.1f}",
             min_market_cap=f"{prefs.min_market_cap:,.0f}",
             min_current_ratio=f"{prefs.min_current_ratio:.2f}",
-            max_debt_equity=f"{prefs.max_debt_equity:.2f}"
+            max_debt_equity=f"{prefs.max_debt_equity:.2f}",
+        )
+        if self._count_tokens(prompt) <= self.MAX_SCREENING_PROMPT_TOKENS:
+            return prompt
+
+        prompt = template.format(
+            timestamp=now,
+            reddit_section="",
+            learning_insights_section=learning_insights_section,
+            confidence_adjustments=confidence_adjustments,
+            max_price=f"{prefs.max_price:.2f}",
+            min_price=f"{prefs.min_price:.2f}",
+            min_volume=f"{prefs.min_volume:,.0f}",
+            price_vs_high_pct=f"{prefs.price_vs_high * 100:.0f}",
+            max_pe=f"{prefs.max_pe:.1f}",
+            min_market_cap=f"{prefs.min_market_cap:,.0f}",
+            min_current_ratio=f"{prefs.min_current_ratio:.2f}",
+            max_debt_equity=f"{prefs.max_debt_equity:.2f}",
+        )
+        if self._count_tokens(prompt) <= self.MAX_SCREENING_PROMPT_TOKENS:
+            return prompt
+
+        return template.format(
+            timestamp=now,
+            reddit_section="",
+            learning_insights_section="",
+            confidence_adjustments=confidence_adjustments,
+            max_price=f"{prefs.max_price:.2f}",
+            min_price=f"{prefs.min_price:.2f}",
+            min_volume=f"{prefs.min_volume:,.0f}",
+            price_vs_high_pct=f"{prefs.price_vs_high * 100:.0f}",
+            max_pe=f"{prefs.max_pe:.1f}",
+            min_market_cap=f"{prefs.min_market_cap:,.0f}",
+            min_current_ratio=f"{prefs.min_current_ratio:.2f}",
+            max_debt_equity=f"{prefs.max_debt_equity:.2f}",
         )
 
     def _build_turnaround_prompt(self, screening_summary: str) -> str:
         """Build the second-phase prompt referencing screening output."""
         now = datetime.now(ny_timezone).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Get learning insights (reuse same method, but only use the section part)
+        learning_insights_section, _ = self._build_learning_insights_section()
+        if learning_insights_section:
+            learning_insights_section = self._truncate_for_context(
+                learning_insights_section, self.MAX_LEARNING_INSIGHTS_TOKENS
+            )
+        screening_summary = self._truncate_for_context(
+            screening_summary, self.SCREENING_TOKEN_LIMIT
+        )
+
         template = load_prompt("turnaround_prompt")
         return template.format(
             screening_summary=screening_summary,
-            timestamp=now
+            timestamp=now,
+            learning_insights_section=learning_insights_section,
         )
 
     def create_final_report(self, screening_data: str, turnaround_data: str) -> str:
@@ -846,10 +2055,10 @@ async def get_value_preferences() -> ValueScreeningPreferences:
     print(f"Minimum Price: ${min_price:.2f}")
     print(f"Minimum Volume: {min_volume:,.0f}")
     print(f"Maximum P/E: {max_pe:.1f}")
-    print(f"Minimum Market Cap: ${min_market_cap/1_000_000:.1f}M")
+    print(f"Minimum Market Cap: ${min_market_cap / 1_000_000:.1f}M")
     print(f"Minimum Current Ratio: {min_current_ratio:.2f}")
     print(f"Maximum Debt/Equity: {max_debt_equity:.2f}")
-    print(f"Maximum Decline from 52-week High: {price_vs_high*100:.1f}%\n")
+    print(f"Maximum Decline from 52-week High: {price_vs_high * 100:.1f}%\n")
 
     return ValueScreeningPreferences(
         max_price=max_price,
