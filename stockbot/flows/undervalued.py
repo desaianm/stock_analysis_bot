@@ -17,7 +17,6 @@ from agno.agent import Agent
 from agno.media import Image
 from agno.models.openai import OpenAIChat
 from agno.utils.log import configure_agno_logging
-from crewai_tools import SerperDevTool
 from pydantic import BaseModel, Field
 
 try:
@@ -25,8 +24,11 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     tiktoken = None
 
+from stockbot.audit import clear_state, write_state
 from stockbot.database.manager import StockDatabaseManager
 from stockbot.database.performance_manager import PerformanceTrackingManager
+from stockbot.screening.funnel import FunnelCandidate, QuantFunnel
+from stockbot.screening.numeric_screen import ScreeningGates
 from stockbot.tools.data import (
     ChartingTool,
     CompanyInfoTool,
@@ -111,7 +113,10 @@ class UndervaluedAnalysisFlow:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.log_file_path: Optional[Path] = None
         self.logger: Optional[logging.Logger] = None
-        self.model_id = "gpt-5.4-nano-2026-03-17"
+        self.reasoning_model_id = "gpt-5.4-mini"
+        self.summary_model_id = "gpt-5.4-nano"
+        self.extraction_model_id = "gpt-4.1-nano"
+        self.model_id = self.reasoning_model_id
 
         # Initialize database
         self.db = StockDatabaseManager()
@@ -152,7 +157,7 @@ class UndervaluedAnalysisFlow:
             self.get_recent_discoveries,
         ]
         shared_model = OpenAIChat(
-            id=self.model_id,
+            id=self.reasoning_model_id,
             temperature=1,
             max_completion_tokens=10000,
         )
@@ -191,11 +196,38 @@ class UndervaluedAnalysisFlow:
         self.reddit_sentiment_agent = Agent(
             name="BayStreet Reddit Scout",
             model=OpenAIChat(
-                id=self.model_id, temperature=1, max_completion_tokens=5000
+                id=self.summary_model_id, temperature=1, max_completion_tokens=5000
             ),
             instructions=reddit_instructions,
             tools=[self.reddit_sentiment_scan],
             markdown=True,
+            add_datetime_to_context=True,
+            timezone_identifier="America/New_York",
+            debug_mode=True,
+        )
+
+        # Funnel deep-dive agent: takes the pre-screened shortlist and emits
+        # strict-JSON thesis per candidate. Replaces the old Reddit-driven
+        # screening + turnaround agents as the discovery driver.
+        deep_dive_instructions = (
+            load_prompt("funnel_deep_dive_instructions").strip().split("\n")
+        )
+        self.deep_dive_agent = Agent(
+            name="Funnel Deep-Dive Analyst",
+            model=OpenAIChat(
+                id=self.reasoning_model_id,
+                temperature=1,
+                max_completion_tokens=8000,
+            ),
+            instructions=deep_dive_instructions,
+            tools=[
+                # Slim toolset — agent should trust funnel metrics, only verify catalysts
+                self.get_recent_news,
+                self.search_market_events,
+                self.get_ticker_history,
+                self.get_similar_stocks,
+            ],
+            markdown=False,  # JSON output, no markdown formatting
             add_datetime_to_context=True,
             timezone_identifier="America/New_York",
             debug_mode=True,
@@ -672,7 +704,7 @@ class UndervaluedAnalysisFlow:
         if collected_posts:
             try:
                 summary_model = OpenAIChat(
-                    id=self.model_id, temperature=1, max_completion_tokens=4000
+                    id=self.summary_model_id, temperature=1, max_completion_tokens=4000
                 )
                 summarizer = Agent(model=summary_model, markdown=True)
                 for idx in range(0, len(collected_posts), 50):
@@ -1191,7 +1223,7 @@ Report:
         try:
             client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             response = await client.chat.completions.create(
-                model=self.model_id,
+                model=self.extraction_model_id,
                 temperature=1,
                 messages=[
                     {
@@ -1454,10 +1486,36 @@ Report:
         )
         return self._extract_content(screening_result)
 
-    async def execute_undervalued_analysis(self) -> str:
-        """Run the screening and turnaround prompts sequentially."""
+    def _run_startup_ritual(self) -> None:
+        """Log past-performance context before any agent runs.
+
+        Surfaces what the learning system would otherwise inject silently into the
+        screening prompt. Helps you read the run log and understand which insights
+        were available to the agent at the time.
+        """
+        print("\n=== Startup Ritual ===")
+        try:
+            section, _adjustments = self._build_learning_insights_section()
+        except Exception as exc:
+            print(f"  Learning insights unavailable: {exc}")
+            return
+        if not section.strip():
+            print("  No prior performance data — running cold.")
+            return
+        for line in section.strip().splitlines():
+            print(f"  {line}")
+        print("======================\n")
+
+    async def execute_legacy_reddit_analysis(self) -> str:
+        """Legacy Reddit-first flow. Kept for comparison; not called by main.py.
+
+        See execute_undervalued_analysis below for the funnel-first replacement.
+        """
         log_file_path = self._configure_agno_debug_logging()
         print(f"Agno debug logs: {log_file_path}")
+
+        # Startup ritual: log past-performance context before agents run
+        self._run_startup_ritual()
 
         # Create analysis run in database
         self.current_run_id = self.db.create_analysis_run(
@@ -1465,6 +1523,12 @@ Report:
             preferences=self.preferences.__dict__,
         )
         print(f"\nStarted analysis run #{self.current_run_id}")
+        write_state(
+            "undervalued",
+            run_id=self.current_run_id,
+            phase="started",
+            preferences=self.preferences.model_dump(),
+        )
 
         try:
             print("\nExecuting undervalued stock screening with Agno...")
@@ -1485,6 +1549,12 @@ Report:
                 "initial_screening",
                 sanitized_screening,
                 "Initial value stock screening results",
+            )
+            write_state(
+                "undervalued",
+                run_id=self.current_run_id,
+                phase="screening_complete",
+                screening_candidates=len(accepted_screening_candidates),
             )
 
             print("\nAnalyzing turnaround potential...")
@@ -1549,6 +1619,7 @@ Report:
             # Initialize portfolio tracking for all saved stocks
             await self._trigger_portfolio_tracking(self.current_run_id)
 
+            clear_state("undervalued")
             return final_report
 
         except Exception as e:
@@ -1558,6 +1629,332 @@ Report:
                     run_id=self.current_run_id,
                     status="failed",
                 )
+            write_state(
+                "undervalued",
+                run_id=self.current_run_id,
+                phase="failed",
+                error=str(e),
+            )
+            raise
+
+    # -------------------------------------------------------------------------
+    # Funnel-first analysis (replaces legacy Reddit-driven flow)
+    # -------------------------------------------------------------------------
+    def _preferences_to_gates(self) -> ScreeningGates:
+        """Map the ValueScreeningPreferences (user-tunable) onto funnel gates."""
+        p = self.preferences
+        return ScreeningGates(
+            max_price=p.max_price,
+            min_price=p.min_price,
+            min_volume=p.min_volume,
+            max_pe=p.max_pe,
+            min_market_cap=p.min_market_cap,
+            max_debt_equity=p.max_debt_equity,
+            min_current_ratio=p.min_current_ratio,
+            require_positive_fcf=True,
+        )
+
+    def _get_reddit_overlay(self, shortlist: List[FunnelCandidate]) -> str:
+        """Lightweight Reddit catalyst overlay for the shortlist tickers only.
+
+        This intentionally does NOT drive discovery. It surfaces whether any of
+        the funnel's picks are currently being discussed on Reddit — useful as
+        sentiment context for the thesis writer, nothing more.
+        """
+        mentions: List[str] = []
+        for c in shortlist[:5]:  # cap to cheapest 5 to limit API calls
+            try:
+                raw = self.reddit_sentiment_scan(c.symbol, max_posts=10)
+                payload = json.loads(raw)
+                posts = payload.get("posts") or []
+                if posts:
+                    titles = [p.get("title") for p in posts[:3] if p.get("title")]
+                    if titles:
+                        mentions.append(f"- {c.symbol}: {'; '.join(titles[:2])}")
+            except Exception:
+                continue
+        if not mentions:
+            return "No funnel-shortlisted tickers had recent Reddit mentions."
+        return "\n".join(mentions)
+
+    def _build_funnel_deep_dive_prompt(
+        self,
+        candidates: List[FunnelCandidate],
+        stats: Dict[str, Any],
+        reddit_overlay: str,
+    ) -> str:
+        now = datetime.now(ny_timezone).strftime("%Y-%m-%d %H:%M:%S")
+        summaries = [c.to_prompt_summary() for c in candidates]
+        template = load_prompt("funnel_deep_dive_prompt")
+        return template.format(
+            timestamp=now,
+            candidate_count=len(candidates),
+            funnel_stats=json.dumps(stats, indent=2, default=str),
+            candidates_json=json.dumps(summaries, indent=2, default=str),
+            reddit_overlay=reddit_overlay,
+        )
+
+    def _parse_deep_dive_json(self, text: str) -> Optional[Dict[str, Any]]:
+        """Parse the strict-JSON output from the deep-dive agent. Tolerate fences."""
+        if not text:
+            return None
+        cleaned = text.strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        if cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    return None
+            return None
+
+    async def _save_funnel_stocks(
+        self,
+        deep_dive: Dict[str, Any],
+        funnel_map: Dict[str, FunnelCandidate],
+    ) -> int:
+        """Persist accepted picks from the JSON deep-dive output."""
+        if not self.current_run_id or not deep_dive:
+            return 0
+        saved = 0
+        for stock in deep_dive.get("stocks", []):
+            ticker = (stock.get("ticker") or "").strip().upper()
+            if not ticker or stock.get("verdict") != "accept":
+                continue
+            candidate = funnel_map.get(ticker)
+            if not candidate:
+                continue
+            snap = candidate.snapshot
+            exchange = "TSX" if snap.exchange == "TSX" else "US"
+            find_data = {
+                "analysis_run_id": self.current_run_id,
+                "ticker": ticker.split(".")[0],
+                "company_name": stock.get("company_name") or ticker,
+                "exchange": exchange,
+                "sector": snap.sector,
+                "industry": snap.industry,
+                "discovery_source": "quant_funnel",
+                "confidence_score": float(stock.get("confidence_score") or 5.0),
+                "current_price": snap.price,
+                "market_cap": snap.market_cap,
+                "pe_ratio": snap.trailing_pe or snap.forward_pe,
+                "debt_to_equity": snap.debt_to_equity,
+                "current_ratio": snap.current_ratio,
+                "price_to_book": snap.price_to_book,
+                "investment_thesis": (stock.get("thesis") or "")[:500],
+                "discovered_at": datetime.now(ny_timezone).isoformat(),
+            }
+            try:
+                self.db.save_stock_find(find_data)
+                saved += 1
+                print(
+                    f"  Saved {ticker} ({stock.get('company_name')}) "
+                    f"conf={stock.get('confidence_score')} thesis={stock.get('thesis', '')[:80]}..."
+                )
+            except Exception as exc:
+                print(f"  Failed to save {ticker}: {exc}")
+        return saved
+
+    def _format_funnel_report(
+        self,
+        stats: Dict[str, Any],
+        candidates: List[FunnelCandidate],
+        deep_dive: Optional[Dict[str, Any]],
+        reddit_overlay: str,
+    ) -> str:
+        """Compose the final markdown report from funnel stats + deep-dive verdicts."""
+        timestamp = datetime.now(ny_timezone).strftime("%Y-%m-%d %H:%M:%S")
+        prefs = self.preferences
+        lines: List[str] = [
+            "# Undervalued Stocks Analysis Report (Quant Funnel)",
+            f"Generated: {timestamp}",
+            "",
+            "## Funnel Statistics",
+        ]
+        for k, v in stats.items():
+            lines.append(f"- {k}: {v}")
+
+        lines += [
+            "",
+            "## Screening Parameters",
+            f"- Price range: ${prefs.min_price:.2f} - ${prefs.max_price:.2f}",
+            f"- Min volume: {prefs.min_volume:,.0f}",
+            f"- Max P/E: {prefs.max_pe}",
+            f"- Min market cap: ${prefs.min_market_cap:,.0f}",
+            f"- Min current ratio: {prefs.min_current_ratio}",
+            f"- Max debt/equity: {prefs.max_debt_equity}",
+            "",
+            "## Shortlist (pre-deep-dive)",
+        ]
+        for c in candidates:
+            s = c.snapshot
+            pe = s.trailing_pe or s.forward_pe
+            implied = c.dcf.by_discount_rate if c.dcf and not c.dcf.error else {}
+            insider_net = c.insider.net_value_usd if c.insider and not c.insider.error else None
+            lines.append(
+                f"- **{s.symbol}** ({s.sector or 'Unknown'}) · price ${s.price:.2f} · "
+                f"mcap ${(s.market_cap or 0)/1e9:.1f}B · P/E {pe:.1f} · "
+                f"sector value {c.ranking.composite_value_score} · "
+                f"implied growth @10% {implied.get('10%', 'n/a')} · "
+                f"insider net 180d {('$%s' % f'{insider_net:,.0f}') if insider_net is not None else 'n/a'} · "
+                f"funnel score {c.composite_funnel_score}"
+            )
+
+        lines += ["", "## Reddit Catalyst Overlay (supporting evidence only)", reddit_overlay]
+
+        if deep_dive and deep_dive.get("stocks"):
+            lines += ["", "## Deep-Dive Verdicts"]
+            for stock in deep_dive["stocks"]:
+                verdict = stock.get("verdict", "?")
+                marker = "✓" if verdict == "accept" else "✗"
+                lines += [
+                    "",
+                    f"### {marker} {stock.get('ticker')} — {stock.get('company_name', '')} ({verdict.upper()})",
+                    f"- **Confidence:** {stock.get('confidence_score')}",
+                    f"- **Thesis:** {stock.get('thesis', '')}",
+                    f"- **Catalyst:** {stock.get('primary_catalyst', '')}",
+                    f"- **Risks:** {'; '.join(stock.get('key_risks', []))}",
+                    f"- **Entry:** {stock.get('entry_strategy', '')}",
+                    f"- **Stop loss:** {stock.get('stop_loss_pct', 'n/a')}",
+                    f"- **Size:** {stock.get('position_size_pct', 'n/a')}",
+                ]
+                if verdict == "reject":
+                    lines.append(f"- **Rejection reason:** {stock.get('rejection_reason', '')}")
+        else:
+            lines += ["", "## Deep-Dive Verdicts", "_Deep-dive output unavailable or unparseable._"]
+
+        return "\n".join(lines)
+
+    async def execute_undervalued_analysis(self) -> str:
+        """Funnel-first flow: deterministic stages 1-5 then LLM thesis-writing on shortlist."""
+        log_file_path = self._configure_agno_debug_logging()
+        print(f"Agno debug logs: {log_file_path}")
+
+        self._run_startup_ritual()
+
+        self.current_run_id = self.db.create_analysis_run(
+            run_type="undervalued",
+            preferences=self.preferences.__dict__,
+        )
+        print(f"\nStarted funnel run #{self.current_run_id}")
+        write_state(
+            "undervalued",
+            run_id=self.current_run_id,
+            phase="started",
+            preferences=self.preferences.model_dump(),
+            mode="quant_funnel",
+        )
+
+        try:
+            # Stages 1-5: deterministic quant funnel
+            print("\n=== Stages 1-5: Quant Funnel (deterministic) ===")
+            funnel = QuantFunnel(
+                gates=self._preferences_to_gates(),
+                top_n_for_dcf=30,
+                top_n_for_insider=20,
+                top_n_final=10,
+                workers=10,
+            )
+            result = funnel.run()
+            shortlist: List[FunnelCandidate] = result["candidates"]
+            stats: Dict[str, Any] = result["stats"]
+            funnel_map = {c.symbol: c for c in shortlist}
+
+            print(f"\nFunnel produced {len(shortlist)} candidates.")
+            write_state(
+                "undervalued",
+                run_id=self.current_run_id,
+                phase="funnel_complete",
+                shortlist_size=len(shortlist),
+                stats=stats,
+            )
+
+            # Lightweight Reddit overlay on the shortlist only
+            print("\nFetching Reddit catalyst overlay for shortlist...")
+            reddit_overlay = self._get_reddit_overlay(shortlist)
+
+            # Stage 6: Agent deep-dive with structured JSON output
+            print("\n=== Stage 6: Agent Deep-Dive (LLM narrative) ===")
+            deep_dive_dict: Optional[Dict[str, Any]] = None
+            if shortlist:
+                prompt = self._build_funnel_deep_dive_prompt(shortlist, stats, reddit_overlay)
+                self._log_prompt_size("Deep-dive prompt", prompt)
+                response = await self.deep_dive_agent.arun(prompt)
+                raw_text = self._extract_content(response)
+                deep_dive_dict = self._parse_deep_dive_json(raw_text)
+                if deep_dive_dict is None:
+                    print("  WARN: deep-dive JSON parse failed; raw output saved")
+                    await self.save_phase_output(
+                        "deep_dive_raw",
+                        raw_text,
+                        "Raw deep-dive output (JSON parse failed)",
+                    )
+                else:
+                    await self.save_phase_output(
+                        "deep_dive",
+                        json.dumps(deep_dive_dict, indent=2, default=str),
+                        "Structured deep-dive verdicts",
+                    )
+            else:
+                print("  Empty shortlist — skipping agent deep-dive.")
+
+            # Persist accepted picks
+            saved_count = 0
+            if deep_dive_dict:
+                saved_count = await self._save_funnel_stocks(deep_dive_dict, funnel_map)
+
+            # Compose + save final report
+            final_report = self._format_funnel_report(
+                stats, shortlist, deep_dive_dict, reddit_overlay
+            )
+            await self.save_phase_output(
+                "final_report",
+                final_report,
+                "Funnel-first undervalued analysis",
+            )
+
+            self.db.add_research_note(
+                ticker="ANALYSIS_RUN",
+                note_type="funnel_report",
+                content=final_report[:5000],
+                source="quant_funnel",
+            )
+
+            self.db.complete_analysis_run(
+                run_id=self.current_run_id,
+                total_candidates=len(shortlist),
+                final_selections=saved_count,
+                status="completed",
+            )
+            print(
+                f"\nFunnel run #{self.current_run_id} complete. "
+                f"Shortlist={len(shortlist)} Saved={saved_count}"
+            )
+
+            await self._trigger_portfolio_tracking(self.current_run_id)
+            clear_state("undervalued")
+            return final_report
+
+        except Exception as exc:
+            if self.current_run_id:
+                self.db.complete_analysis_run(
+                    run_id=self.current_run_id, status="failed"
+                )
+            write_state(
+                "undervalued",
+                run_id=self.current_run_id,
+                phase="failed",
+                error=str(exc),
+            )
             raise
 
     def _extract_content(self, response: Any) -> str:
@@ -1650,22 +2047,6 @@ Report:
             )
         except Exception:
             return ""
-
-    def _build_image_payload(self, limit: int = 8) -> List[Image]:
-        """Convert stored chart paths into Agno Image objects."""
-        images: List[Image] = []
-        for path in self._chart_paths[-limit:]:
-            try:
-                if os.path.exists(path):
-                    images.append(Image(path=path))
-            except Exception:
-                continue
-        return images
-
-    def _register_chart_path(self, path: str) -> None:
-        """Track chart files so they can be attached to future prompts."""
-        if path and path not in self._chart_paths:
-            self._chart_paths.append(path)
 
     def _truncate_for_context(self, text: str, limit_tokens: int) -> str:
         """Ensure downstream prompts stay within token limits."""

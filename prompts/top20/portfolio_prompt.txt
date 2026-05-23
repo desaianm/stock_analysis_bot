@@ -1,0 +1,14 @@
+Current Date and Time: {timestamp}
+
+Build the final allocated portfolio from these 20 ranked stocks.
+
+## Ranked Top 20
+{ranked_top_20}
+
+Constraints:
+- Max position size: {max_position_size_pct}%
+- Max sector concentration: 25%
+- Total weights must sum to 100%
+- {risk_tolerance} risk tolerance
+
+For each position provide target weight, entry price range, stop loss, and the primary catalyst to monitor. Add a portfolio-level risk summary (sector breakdown, diversification notes, expected beta if estimable).

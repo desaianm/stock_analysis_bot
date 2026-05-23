@@ -1,0 +1,10 @@
+Current Date and Time: {timestamp}
+
+The screening phase produced this candidate universe. Rank these head-to-head and select the top 20.
+
+## Candidate Universe
+{candidates}
+
+Score each on financial strength, growth runway, valuation, technical setup, and catalysts. Use the data tools to validate current price, recent news, and analyst sentiment. Eliminate any candidate that fails a non-negotiable filter (declining revenue 2+ years, debt/equity > 3.0, no positive cash flow).
+
+Produce the final top-20 table with rank, score (1-10), one-line thesis, and key risk for each. Include an "Eliminated" section with reasons.

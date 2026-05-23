@@ -1,19 +1,82 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`main.py` is the Discord entrypoint and routes slash commands into CrewAI flows housed under `stockbot/flows/`. Agent factories live in `stockbot/agents/financial.py`, while portfolio analysis crews sit in `stockbot/portfolio/analysis.py`. Shared data adapters, charting helpers, and markdown utilities were consolidated into `stockbot/tools/data.py`, and command-specific tasks reside in `stockbot/tasks/workflows.py`. Generated artefacts land in `reports/`, `outputs/`, and `plots/`. Keep new modules alongside the nearest flow and include a brief module docstring describing the agent’s responsibility.
+
+`main.py` is the Discord entrypoint and dispatches slash commands to Agno flows under `stockbot/flows/`:
+
+- `undervalued.py` — funnel-first value flow; deep-dive agent emits strict JSON output
+- `recommendations.py` — `/top20` portfolio construction (3 Agno agents)
+- `single_stock.py` — `/analyze` multi-agent single-stock report (5 Agno agents)
+- `company_lookup.py` — name → ticker resolver (1 Agno agent)
+- `performance_tracker.py` — portfolio tracking + learning insights
+
+Quant funnel (used by `/undervalued`):
+
+- `stockbot/screening/universe.py` — S&P 500 + S&P 600 + TSX Composite loader from Wikipedia (24h cache).
+- `stockbot/screening/numeric_screen.py` — parallel yfinance scan + hard gates from `ScreeningGates`.
+- `stockbot/screening/ranking.py` — sector-relative percentile ranking + composite value score.
+- `stockbot/screening/valuation.py` — reverse-DCF: solves for implied growth at multiple discount rates.
+- `stockbot/screening/funnel.py` — orchestrator chaining stages 1-5.
+
+Shared infrastructure:
+
+- `stockbot/tools/data.py` — yfinance + Tavily + EXA wrappers. All tools extend a tiny local `BaseTool` shim; no third-party tool base class required.
+- `stockbot/tools/insider.py` — Financial Datasets API wrapper for Form 4 insider trades with 0-10 signal score.
+- `stockbot/tools/performance_tools.py` — portfolio price update + insight generation.
+- `stockbot/web/` — Flask watchlist UI ("Tradesheet" light theme, lazy-loads live quotes for legacy rows).
+- `stockbot/database/` — SQLite schema and managers.
+- `stockbot/audit.py` — JSON state file writers for in-flight runs.
+- `stockbot/scheduler/daily_tracker.py` — daily 5 PM ET portfolio update with pre-flight price verification.
+- `prompts/<flow_name>/` — flow-specific prompt templates loaded via `load_prompt(name)`.
+
+Generated artefacts land in `outputs/`, `plots/`, `reports/`, `logs/`, `state/`, and the local SQLite databases. All are gitignored.
 
 ## Build, Test, and Development Commands
-Create an isolated environment with `python -m venv .venv` and `source .venv/bin/activate`, then install dependencies via `pip install -r requirements.txt`. Run the bot locally with `python main.py`; pass `--log-level DEBUG` while diagnosing Discord or CrewAI events. Execute `python test.py` for the current integration smoke test of market data tools. For quick experiments, open `python -i stockbot/agents/financial.py` to reuse agent factories, or `python -m ipdb main.py` to inspect runtime state.
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+python main.py                                       # run the Discord bot
+python -m stockbot.flows.undervalued                 # run the funnel directly
+PYTHONPATH=. python scripts/run_funnel_under20.py    # under-$20 preset
+PYTHONPATH=. python scripts/run_web.py               # launch watchlist UI :5050
+PYTHONPATH=. python scripts/smoke_models.py          # cheap model-id check
+PYTHONPATH=. python scripts/smoke_funnel.py          # 150-ticker funnel smoke (~$0.05)
+PYTHONPATH=. python scripts/probe_apis.py            # Financial Datasets + Polygon endpoint probe
+python test.py                                       # data-tool smoke (no LLM calls)
+RUN_FLOW_TESTS=1 python test.py                      # also exercise all three flows
+```
+
+`python -m py_compile <file>` before pushing if a linter isn't available.
 
 ## Coding Style & Naming Conventions
-Target Python 3.10+, follow PEP 8, and use 4-space indentation. Functions and modules stay `snake_case`, classes `PascalCase`, constants `UPPER_SNAKE`. Group imports as standard library, third party, then local, alphabetized within each block. Annotate public functions with type hints, prefer `dataclasses` when passing structured results between agents, and keep f-string formatting consistent (`f"{value:.2f}"`). Run `python -m py_compile <file>` before pushing if linting is unavailable.
+
+Python 3.10+, PEP 8, 4-space indentation. Functions and modules `snake_case`, classes `PascalCase`, constants `UPPER_SNAKE`. Group imports as standard library → third-party → local, alphabetized within each block. Annotate public functions; prefer `dataclasses` or `pydantic.BaseModel` for structured payloads. Format f-strings consistently (`f"{value:.2f}"`).
+
+When extending a flow, mirror the structure of `undervalued.py`: a flow class owns its agents, holds tool wrappers as methods returning JSON strings, and loads prompts from `prompts/<flow_name>/`.
+
+## Models
+
+Three-tier OpenAI split is the convention:
+
+- `gpt-5.4-mini` — reasoning (main agents)
+- `gpt-5.4-nano` — summarization (Reddit batches, lightweight summarisers)
+- `gpt-4.1-nano` — JSON extraction (ticker resolution, structured output)
+
+Set these as `reasoning_model_id` / `summary_model_id` / `extraction_model_id` in the flow's `__init__`.
 
 ## Testing Guidelines
-Expand coverage as you modify agent logic. Prefer pytest and place tests under `tests/` once added; name files after their targets (e.g., `tests/test_tools.py`). Mock external APIs or gate them behind `pytest.mark.external` to avoid consuming QuickFS, OpenAI, or Tavily quotas. Keep golden markdown reports in `reports/snapshots/` and reference them in assertions rather than hitting live services. Update `test.py` only for high-value end-to-end smoke checks.
+
+Stand-alone tool diagnostics live under `stockbot/tools/tests/`. Each `test_<name>_tool.py` is a CLI runner that takes a ticker and prints the tool's live result. Use them when changing `data.py`. Heavier integration tests go in `test.py` at the repo root.
+
+Mock external APIs in unit tests; full flow runs consume real OpenAI quota. Gate live-API tests behind environment variables (e.g. `RUN_FLOW_TESTS=1`).
 
 ## Commit & Pull Request Guidelines
-Use short, present-tense commit messages similar to `added memory to all agents`. Rebase before opening a PR and collapse fixups locally. Each PR should include a problem statement, bullet summary of changes, evidence of tests run (`python test.py` or `pytest`), and notes on new environment variables or assets. Link related issues or Discord tickets and attach before/after plots when visuals change.
+
+Short, present-tense commit subjects (`fix undervalued model id`, `port top20 to agno`). Rebase before opening a PR. Each PR should include: problem statement, bullet summary of changes, evidence of tests run, and notes on new environment variables. Attach before/after screenshots when the Discord output changes.
 
 ## Configuration & Secrets
-Store secrets (`OPENAI_API_KEY`, `GOOGLE_API_KEY`, `DISCORD_BOT_TOKEN`, QuickFS credentials) in a local `.env`; `python-dotenv` loads them in `main.py`, `stockbot/tasks/workflows.py`, and `test.py`. Mirror any new key requirements in `README.md` and rotate the credential immediately if they surface in logs, reports, or git history.
+
+Required for `/undervalued`: `OPENAI_API_KEY`, `FINANCIAL_DATASETS_API_KEY` (insider trades). Required for the Discord bot: `DISCORD_TOKEN`. Optional fallbacks for web search: `TAVILY_API_KEY`, `EXA_API_KEY`. Loaded via `python-dotenv` from `.env`. Mirror new keys in `README.md`; rotate any credential that lands in logs, reports, or git history.

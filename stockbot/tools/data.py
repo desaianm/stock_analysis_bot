@@ -1,69 +1,31 @@
-import base64
-import contextlib
 import math
 import os
+import random
 import re
-import warnings
 from datetime import datetime
 from html import unescape
 from typing import Any, Dict, List, Optional, Type
 from urllib.parse import parse_qs, unquote, urlparse
 
+import matplotlib
 import requests
-import urllib3
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
-import random
+
+matplotlib.use("Agg")  # non-interactive backend, must be set before pyplot
 import matplotlib.pyplot as plt
-from crewai.tools import BaseTool
-from langchain_core.messages import HumanMessage
-
-try:
-    from quickfs import QuickFS
-except ImportError:  # pragma: no cover - optional legacy fallback
-    QuickFS = None
-
-# Suppress LangChain deprecation warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain_community")
-try:
-    from langchain_community.tools import TavilySearchResults
-except ImportError:  # pragma: no cover - depends on installed optional search stack
-    TavilySearchResults = None
 
 load_dotenv()
 
-_QUICKFS_HOST = "public-api.quickfs.net"
 
-@contextlib.contextmanager
-def _quickfs_ssl_workaround():
-    """Temporarily disable SSL verification for QuickFS requests only.
+class BaseTool:
+    """Minimal Agno-compatible tool base. Subclasses define ._run(); we expose .run()."""
+    name: str = ""
+    description: str = ""
+    args_schema: Optional[Type[BaseModel]] = None
 
-    QuickFS occasionally serves a certificate with a hostname mismatch.
-    This patches requests.get/post at the module level for the duration of
-    the call, suppressing the urllib3 InsecureRequestWarning as well.
-    """
-    _orig_get = requests.get
-    _orig_post = requests.post
-
-    def _patched_get(url, **kwargs):
-        if _QUICKFS_HOST in url:
-            kwargs.setdefault("verify", False)
-        return _orig_get(url, **kwargs)
-
-    def _patched_post(url, **kwargs):
-        if _QUICKFS_HOST in url:
-            kwargs.setdefault("verify", False)
-        return _orig_post(url, **kwargs)
-
-    requests.get = _patched_get
-    requests.post = _patched_post
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    try:
-        yield
-    finally:
-        requests.get = _orig_get
-        requests.post = _orig_post
+    def run(self, *args, **kwargs):
+        return self._run(*args, **kwargs)
 
 def _clean_symbol(symbol: str) -> str:
     """Normalize symbols for yfinance while preserving exchange suffixes."""
@@ -278,73 +240,31 @@ class TavilySearchInput(BaseModel):
 
 class TavilySearchTool(BaseTool):
     name: str = "Web Search Tool"
-    description: str = """Useful to search the web for information. Uses Tavily when configured, otherwise falls back to DuckDuckGo search."""
+    description: str = """Search the web. Uses Tavily when TAVILY_API_KEY is set; otherwise falls back to DuckDuckGo."""
     args_schema: Type[BaseModel] = TavilySearchInput
 
     def _run(self, query: str) -> List[Dict[str, Any]]:
-        if TavilySearchResults is not None and os.getenv("TAVILY_API_KEY"):
+        api_key = os.getenv("TAVILY_API_KEY")
+        if api_key:
             try:
-                tavily_search = TavilySearchResults(
-                    max_results=10,
-                    search_depth="advanced",
-                    include_raw_content=False,
+                response = requests.post(
+                    "https://api.tavily.com/search",
+                    json={
+                        "api_key": api_key,
+                        "query": query,
+                        "search_depth": "advanced",
+                        "max_results": 10,
+                        "include_raw_content": False,
+                    },
+                    timeout=20,
                 )
-                return tavily_search.run(query)
+                response.raise_for_status()
+                payload = response.json() or {}
+                return payload.get("results", [])
             except Exception:
                 pass
         return _fallback_web_search(query, max_results=8)
 
-class ExtractionToolInput(BaseModel):
-    """Input schema for ExtractionTool."""
-    data: str = Field(..., description="Input string containing symbol and metrics (e.g., 'AAPL revenue net_income eps')")
-
-class ExtractionTool(BaseTool):
-    name: str = "Extract symbol and metrics"
-    description: str = """Useful to extract the relevant information from the input string. Parses string and extracts the symbol and all of the relevant metrics requested.
-        Example:
-        - Input: "AAPL revenue net_income eps"
-        - Output: [
-            {"symbol": "AAPL", "metric": "revenue"},
-            {"symbol": "AAPL", "metric": "net_income"},
-            {"symbol": "AAPL", "metric": "eps"}
-        ]
-        """
-    args_schema: Type[BaseModel] = ExtractionToolInput
-
-    def _run(self, data: str) -> List[dict]:
-        words = data.split()
-        symbol = words[0]
-        result_list = [{"symbol": symbol, "metric": metric} for metric in words[1:]]
-        return result_list
-
-class DataFetchingToolInput(BaseModel):
-    """Input schema for DataFetchingTool."""
-    symbol: str = Field(..., description="Stock symbol (e.g., 'AAPL')")
-    metric: str = Field(..., description="Financial metric to retrieve (e.g., 'revenue')")
-
-class DataFetchingTool(BaseTool):
-    name: str = "Retrieve metric data from financial statements"
-    description: str = """Useful to retrieve data from yfinance financial statements based on the given symbol and metric.
-        :param symbol: str, only one symbol
-        :param metric: str, only one metric
-        :return value: list, A list containing the data points retrieved
-        Return value example: [...data_points]
-
-        Example:
-        - Input: symbol="AAPL", metric="revenue"
-        - Output: [265595000000, 274515000000, 365817000000, 394328000000, 383285000000]
-        """
-    args_schema: Type[BaseModel] = DataFetchingToolInput
-
-    def _run(self, symbol: str, metric: str) -> List:
-        normalized_metric = metric.strip().lower()
-        data = _build_yfinance_financial_report(symbol)
-        value = data.get(normalized_metric)
-        if value is None:
-            raise RuntimeError(
-                f"Metric '{metric}' unavailable for {symbol} from yfinance statements"
-            )
-        return value if isinstance(value, list) else [value]
 
 class CreateChartInput(BaseModel):
     metric: str
@@ -353,9 +273,6 @@ class CreateChartInput(BaseModel):
 class CreateChartOutput(BaseModel):
     file_path: str
 
-import matplotlib
-matplotlib.use('Agg')  # Use the 'Agg' backend (non-interactive)
-import matplotlib.pyplot as plt
 class ChartingToolInput(BaseModel):
     """Input schema for ChartingTool."""
     metric_name: str = Field(..., description="Name of the metric to be visualized")
@@ -396,32 +313,6 @@ class ChartingTool(BaseTool):
         return CreateChartOutput(file_path=file_path)
 
 
-class MarkdownToolInput(BaseModel):
-    """Input schema for MarkdownTool."""
-    text: str = Field(..., description="The markdown text to write to the file")
-
-class MarkdownTool(BaseTool):
-    name: str = "Write text to markdown file"
-    description: str = """Useful to write markdown text in a *.md file.
-           The input to this tool should be a string representing what should used to create markdown syntax. Takes the location of the file as a string and creates the correct syntax thats compatible with an .md file eg report.md
-
-           Example:
-           - Input: "# Financial Report\n\n## Revenue\n\n![Revenue Chart](revenue_chart.png)\n\nThe revenue has shown steady growth over the past 5 years."
-           - Output: "File written to report.md."
-           
-           :param text: str, the string to write to the file
-           """
-    args_schema: Type[BaseModel] = MarkdownToolInput
-
-    def _run(self, text: str) -> str:
-        try:
-            markdown_file_path = r'report.md'
-            with open(markdown_file_path, 'w') as file:
-                file.write(text)
-            return f"File written to {markdown_file_path}."
-        except Exception:
-            return "Something has gone wrong writing images to markdown file."
-
 class FinancialReportToolInput(BaseModel):
     """Input schema for FinancialReportTool."""
     symbol: str = Field(..., description="The stock symbol to create a financial report for")
@@ -445,110 +336,10 @@ class FinancialReportTool(BaseTool):
     args_schema: Type[BaseModel] = FinancialReportToolInput
 
     def _run(self, symbol: str) -> Dict[str, Any]:
-        try:
-            return _build_yfinance_financial_report(symbol)
-        except Exception as yfinance_exc:
-            if QuickFS is None or not os.getenv("QUICKFS_API_KEY"):
-                raise RuntimeError(
-                    f"Financial statement request failed via yfinance: {yfinance_exc}"
-                ) from yfinance_exc
-
-            try:  # pragma: no cover - optional legacy fallback
-                client = QuickFS(os.getenv("QUICKFS_API_KEY"))
-                with _quickfs_ssl_workaround():
-                    quickfs_data = client.get_data_full(symbol)
-                if isinstance(quickfs_data, dict):
-                    quickfs_data.setdefault("source", "quickfs")
-                return quickfs_data
-            except Exception as quickfs_exc:
-                raise RuntimeError(
-                    "Financial statement request failed via yfinance and QuickFS: "
-                    f"{yfinance_exc}; {quickfs_exc}"
-                ) from quickfs_exc
-    
-class ChatAnalysisToolInput(BaseModel):
-    """Input schema for ChatAnalysisTool."""
-    data: str = Field(..., description="The data to analyze and create a report for")
-
-class ChatAnalysisTool(BaseTool):
-    name: str = "Chat Analysis Tool"
-    description: str = """
-    Useful to analyze the charts of a symbol and create a report.
-
-    :param data: str, the data to analyze
-    :return report: str, the report in markdown syntax
-
-    Example:
-    - Input: "Analyze the revenue and net income charts for AAPL"
-    - Output: "# Financial Analysis Report for AAPL
-
-    ## Revenue Analysis
-    ![Revenue Chart](revenue_chart.png)
-
-    Apple's revenue has shown consistent growth over the past 5 years, with a notable increase in FY2021...
-
-    ## Net Income Analysis
-    ![Net Income Chart](net_income_chart.png)
-
-    The company's net income has followed a similar trend to its revenue, demonstrating strong profitability..."
-    """
-    args_schema: Type[BaseModel] = ChatAnalysisToolInput
-
-    def _encode_image(self, image_path):
-        with open(image_path, "rb") as image_file:
-            return base64.b64encode(image_file.read()).decode('utf-8')
-
-    def _run(self, data: str) -> str:
-        model = ChatGoogleGenerativeAI(model="gemini-2.0-flash-latest")
-
-        # Get all image files in the plots directory
-        plot_files = [f for f in os.listdir('plots') if f.endswith('.png')]
-        
-        # Encode each image to base64
-        encoded_images = []
-        for plot_file in plot_files:
-            image_path = os.path.join('plots', plot_file)
-            encoded_image = self._encode_image(image_path)
-            encoded_images.append({
-                "file_name": plot_file,
-                "base64_image": encoded_image
-            })
-        
-        # Prepare the prompt for the model
-        prompt = f"""Analyze the following financial charts and create a comprehensive report:
-
-
-        Charts: {', '.join([img['file_name'] for img in encoded_images])}
-
-        Please provide a detailed analysis of the financial performance based on these charts. 
-        Include insights on trends, potential risks, and opportunities. 
-        Format the report in markdown syntax, including appropriate headers and sections.
-        """
-
-        # Call the model with the prompt and images
-        response = model.invoke(
-            [
-                HumanMessage(content=[
-                    {
-                        "type": "text",
-                        "text": prompt
-                    },
-                    *[{
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{img['base64_image']}",
-                            "detail": "high"
-                        }
-                    } for img in encoded_images]
-                ])
-            ]
-        )
-
-        return response.content
+        return _build_yfinance_financial_report(symbol)
 
 
 import yfinance as yf
-import os
 
 
 class StockPriceDataToolInput(BaseModel):

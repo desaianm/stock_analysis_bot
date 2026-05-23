@@ -56,7 +56,7 @@ class SingleStockAnalysisFlow:
         self.ticker = ticker.upper()
         self.output_dir = Path("outputs/stock_analysis")
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.model_id = "gpt-4.1"
+        self.model_id = "gpt-5.4-mini"
 
         # Instantiate reusable tool objects
         self._stock_price_tool = StockPriceDataTool()

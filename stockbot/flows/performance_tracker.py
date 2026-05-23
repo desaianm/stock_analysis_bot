@@ -42,7 +42,7 @@ class PerformanceTrackerFlow:
         self.performance_agent = Agent(
             name="Portfolio Performance Analyst",
             model=OpenAIChat(
-                id="gpt-5.4-nano-2026-03-17",
+                id="gpt-5.4-mini",
                 temperature=1,
                 max_completion_tokens=10000,
             ),
@@ -154,24 +154,70 @@ class PerformanceTrackerFlow:
 
         print(f"\n[Performance Tracker] Updating {len(tickers)} active holdings...")
 
+        # Pre-flight verification: confirm we can price each holding before the
+        # agent reasons about them. Refuse to proceed if more than half fail.
+        verification = self._verify_prices(tickers)
+        failed = verification["failed"]
+        if failed:
+            print(f"  Price verification failures ({len(failed)}/{len(tickers)}):")
+            for ticker, reason in failed.items():
+                print(f"    - {ticker}: {reason}")
+        if len(failed) > len(tickers) // 2:
+            print(
+                f"  Aborting daily update: {len(failed)}/{len(tickers)} tickers "
+                "failed to price (likely API/network issue, not stale data)."
+            )
+            return
+
+        valid_holdings = [h for h in holdings if h["ticker"] not in failed]
+
         # Build daily review prompt
         prompt = load_prompt("daily_review_prompt").format(
             current_date=datetime.now(ny_timezone).isoformat(),
-            active_holdings_count=len(holdings),
-            ticker_list=", ".join(tickers),
+            active_holdings_count=len(valid_holdings),
+            ticker_list=", ".join(h["ticker"] for h in valid_holdings),
             pending_catalysts=self._get_pending_catalysts_summary(),
         )
 
-        # Run agent
         try:
             result = await self.performance_agent.arun(prompt)
-            print(f"  Daily update completed: {len(tickers)} holdings processed")
-
-            # Extract and save performance snapshots
-            await self._save_performance_snapshots(holdings)
-
+            print(
+                f"  Daily update completed: {len(valid_holdings)} holdings updated, "
+                f"{len(failed)} skipped due to verification failure"
+            )
+            await self._save_performance_snapshots(valid_holdings)
         except Exception as e:
             print(f"  Error during daily update: {e}")
+
+    def _verify_prices(self, tickers: List[str]) -> dict:
+        """Pre-fetch quotes to surface tickers we can't price before saving.
+
+        Returns {"ok": [tickers], "failed": {ticker: reason}}.
+        """
+        ok: list[str] = []
+        failed: dict[str, str] = {}
+        try:
+            raw = self.tools_instance.update_portfolio_prices(tickers)
+            payload = json.loads(raw)
+        except Exception as exc:
+            return {"ok": [], "failed": {t: f"verification call failed: {exc}" for t in tickers}}
+
+        for row in payload.get("prices", []):
+            ticker = row.get("ticker")
+            if not ticker:
+                continue
+            if "error" in row:
+                failed[ticker] = row["error"]
+            elif row.get("price") is None:
+                failed[ticker] = "null price returned"
+            else:
+                ok.append(ticker)
+
+        # Cover tickers missing from the response entirely
+        for ticker in tickers:
+            if ticker not in ok and ticker not in failed:
+                failed[ticker] = "no response from quote API"
+        return {"ok": ok, "failed": failed}
 
     async def generate_weekly_learning_insights(self):
         """Weekly learning synthesis (runs every Sunday)."""
