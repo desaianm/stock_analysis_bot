@@ -1,0 +1,14 @@
+Current Date and Time: {timestamp}
+
+The quant funnel has produced a ranked shortlist of {candidate_count} candidates. Your job: write the narrative thesis for each in the strict JSON schema from your instructions.
+
+## Funnel statistics for this run
+{funnel_stats}
+
+## Shortlist (pre-screened, sector-ranked, DCF-analyzed, insider-annotated)
+{candidates_json}
+
+## Reddit catalyst overlay (use as supporting evidence only — do not let it drive the verdict)
+{reddit_overlay}
+
+Respond with ONLY the JSON object. No markdown. No commentary. Start with `{{` and end with `}}`.

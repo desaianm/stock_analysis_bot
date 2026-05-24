@@ -6,6 +6,7 @@ logs/
 outputs/
 plots/
 reports/
+state/
 repopack-output.txt
 __pycache__/
 *.py[cod]

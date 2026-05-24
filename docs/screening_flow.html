@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Stock Analysis Bot — Screening Flow & Roadmap</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2129;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --amber: #d29922;
+    --red: #f85149;
+    --code-bg: #0d1117;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    line-height: 1.55;
+    font-size: 15px;
+  }
+  .container { max-width: 1080px; margin: 0 auto; padding: 48px 32px 96px; }
+  header { margin-bottom: 48px; padding-bottom: 24px; border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 32px; margin: 0 0 8px; letter-spacing: -0.5px; }
+  header .subtitle { color: var(--muted); font-size: 16px; margin: 0; }
+  header .meta { color: var(--muted); font-size: 13px; margin-top: 12px; font-family: ui-monospace, monospace; }
+  h2 {
+    font-size: 22px;
+    margin: 56px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    letter-spacing: -0.3px;
+  }
+  h3 { font-size: 17px; margin: 28px 0 12px; color: var(--text); }
+  p { margin: 0 0 14px; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; background: var(--panel-2); padding: 1px 6px; border-radius: 4px; color: #f0883e; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 16px; overflow-x: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; line-height: 1.5; }
+  pre code { background: none; padding: 0; color: var(--text); }
+  ul, ol { padding-left: 22px; margin: 0 0 14px; }
+  li { margin-bottom: 6px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px 24px; margin: 20px 0; }
+  .panel.warn { border-left: 3px solid var(--amber); }
+  .panel.bad { border-left: 3px solid var(--red); }
+  .panel.good { border-left: 3px solid var(--green); }
+
+  /* Flow diagrams */
+  .flow {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin: 24px 0;
+    overflow-x: auto;
+    padding-bottom: 8px;
+  }
+  .step {
+    flex: 1;
+    min-width: 130px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 12px;
+    text-align: center;
+    position: relative;
+    margin-right: 24px;
+  }
+  .step:last-child { margin-right: 0; }
+  .step::after {
+    content: "→";
+    position: absolute;
+    right: -22px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 18px;
+    color: var(--muted);
+    font-weight: bold;
+  }
+  .step:last-child::after { content: ""; }
+  .step .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .step .title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .step .meta { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
+  .step.reddit { border-color: #d29922; }
+  .step.agent { border-color: #58a6ff; }
+  .step.gate { border-color: #f85149; }
+  .step.persist { border-color: #3fb950; }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  th { background: var(--panel); font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; font-size: 11px; }
+  tr:hover td { background: var(--panel-2); }
+  td.status { font-family: ui-monospace, monospace; font-size: 12px; }
+  td.status.ok { color: var(--green); }
+  td.status.warn { color: var(--amber); }
+  td.status.bad { color: var(--red); }
+
+  /* Bottleneck cards */
+  .bottleneck {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--red);
+    border-radius: 6px;
+    padding: 16px 18px;
+    margin: 12px 0;
+  }
+  .bottleneck .sev { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 10px; background: var(--red); color: white; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-right: 8px; vertical-align: middle; }
+  .bottleneck .sev.med { background: var(--amber); }
+  .bottleneck .sev.low { background: var(--muted); }
+  .bottleneck h4 { display: inline; font-size: 15px; margin: 0; vertical-align: middle; }
+  .bottleneck .desc { color: var(--text); margin-top: 8px; font-size: 14px; }
+  .bottleneck .impact { color: var(--muted); margin-top: 6px; font-size: 13px; font-style: italic; }
+
+  /* Funnel diagram */
+  .funnel { margin: 24px 0; }
+  .funnel-stage {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .funnel-stage:last-child { border-bottom: none; }
+  .funnel-num {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--bg);
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+  }
+  .funnel-body { flex: 1; }
+  .funnel-body .name { font-weight: 600; font-size: 14px; }
+  .funnel-body .what { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .funnel-count {
+    flex-shrink: 0;
+    font-family: ui-monospace, monospace;
+    font-size: 13px;
+    color: var(--green);
+    background: rgba(63, 185, 80, 0.08);
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid rgba(63, 185, 80, 0.2);
+  }
+
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-family: ui-monospace, monospace; }
+  .pill.ok { background: rgba(63, 185, 80, 0.12); color: var(--green); border: 1px solid rgba(63, 185, 80, 0.3); }
+  .pill.warn { background: rgba(210, 153, 34, 0.12); color: var(--amber); border: 1px solid rgba(210, 153, 34, 0.3); }
+  .pill.bad { background: rgba(248, 81, 73, 0.12); color: var(--red); border: 1px solid rgba(248, 81, 73, 0.3); }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+  .kpi {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 18px;
+  }
+  .kpi .v { font-size: 24px; font-weight: 700; color: var(--text); font-family: ui-monospace, monospace; }
+  .kpi .l { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+
+  footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>Stock Analysis Bot — Screening Flow &amp; Roadmap</h1>
+  <p class="subtitle">How <code>/undervalued</code> works today, where it failed, and how the quant funnel fixed it.</p>
+  <p class="meta">Generated 2026-05-23 · branch <code>codex/replace-broken-data-tools-and-flow-fixes</code> · runs analyzed: #15, #16, #17 (legacy) → #18 (funnel)</p>
+  <div class="panel good" style="margin-top: 20px;">
+    <strong>UPDATE — funnel shipped 2026-05-23.</strong> Run #18 (150-ticker smoke universe): produced 10 shortlist candidates, agent accepted 7, rejected 3 with explicit reasons. First non-zero save in the last 4 runs. Real large-cap names across 5 sectors. End-to-end cost ~$0.05.
+  </div>
+</header>
+
+<h2>1. What the bot does today</h2>
+
+<p>
+<code>/undervalued</code> runs three Agno agents in sequence, with Reddit as the primary discovery source.
+A fourth deterministic step (the hard-screen gate) filters whatever the agent picked.
+</p>
+
+<div class="flow">
+  <div class="step reddit">
+    <div class="label">Discovery</div>
+    <div class="title">Reddit Scout</div>
+    <div class="meta">r/Baystreetbets<br>r/wallstreetbets<br>~60 posts/batch</div>
+  </div>
+  <div class="step agent">
+    <div class="label">Phase 1</div>
+    <div class="title">Screening Agent</div>
+    <div class="meta">gpt-5.4-mini<br>14 tools<br>~3 min/run</div>
+  </div>
+  <div class="step gate">
+    <div class="label">Filter</div>
+    <div class="title">Hard Screen</div>
+    <div class="meta">numeric gates<br>P/E, mcap, vol<br>current ratio</div>
+  </div>
+  <div class="step agent">
+    <div class="label">Phase 2</div>
+    <div class="title">Turnaround Agent</div>
+    <div class="meta">gpt-5.4-mini<br>14 tools<br>deep dossier</div>
+  </div>
+  <div class="step persist">
+    <div class="label">Output</div>
+    <div class="title">SQLite + Reports</div>
+    <div class="meta">stock_finds<br>holdings<br>3× MD files</div>
+  </div>
+</div>
+
+<h3>Data sources currently wired</h3>
+<table>
+  <tr><th>Source</th><th>Used for</th><th>Status</th></tr>
+  <tr><td><code>yfinance</code></td><td>Prices, financials, news, options, analyst recs</td><td class="status ok">live, working</td></tr>
+  <tr><td>Tavily REST</td><td>Web search (advanced)</td><td class="status ok">live when key set</td></tr>
+  <tr><td>EXA</td><td>Web search alt</td><td class="status ok">live when key set</td></tr>
+  <tr><td>DDGS</td><td>Web search fallback</td><td class="status ok">always available</td></tr>
+  <tr><td>Reddit JSON</td><td>Discovery (BayStreet + WSB)</td><td class="status warn">primary driver — see bottlenecks</td></tr>
+  <tr><td>Polygon</td><td>—</td><td class="status bad">key in .env, never imported</td></tr>
+  <tr><td>Financial Datasets</td><td>—</td><td class="status bad">key in .env, never imported</td></tr>
+  <tr><td>Firecrawl</td><td>—</td><td class="status bad">key in .env, never imported</td></tr>
+  <tr><td>Serper</td><td>—</td><td class="status bad">key in .env, never imported</td></tr>
+</table>
+
+<h2>2. What's actually broken</h2>
+
+<div class="grid">
+  <div class="kpi"><div class="v">0 / 3</div><div class="l">recent runs that saved any candidate</div></div>
+  <div class="kpi"><div class="v">100%</div><div class="l">of discovered tickers come from Reddit</div></div>
+  <div class="kpi"><div class="v">P/E &lt; 25</div><div class="l">absolute threshold, no sector context</div></div>
+  <div class="kpi"><div class="v">~3 min</div><div class="l">per run; ~75% spent on agent reasoning</div></div>
+</div>
+
+<h3>Bottlenecks, ranked by impact</h3>
+
+<div class="bottleneck">
+  <span class="sev">critical</span><h4>Reddit is the only discovery source</h4>
+  <div class="desc">The screening agent's prompt opens with <em>"PRIORITY INTELLIGENCE: Recent Reddit Community Insights"</em>. Every ticker the agent considers came from a recent r/Baystreetbets or r/wallstreetbets post. If Reddit is quiet that day, or only retail-momentum names are trending, the entire run is biased toward speculative micro-caps.</div>
+  <div class="impact">Symptom: runs #15-#17 surfaced tickers like RX.V, SCD.V, DMX.V, ABXX.NE — all micro-cap Canadian names. The fundamental universe (S&amp;P 500, TSX Composite, Russell 1000) is never scanned.</div>
+</div>
+
+<div class="bottleneck">
+  <span class="sev">critical</span><h4>Hard screen rejects after the agent picks — wasted reasoning</h4>
+  <div class="desc">The agent spends ~2 min producing a multi-page screening report. Then <code>_hard_screen_report_candidates</code> rejects most/all of the picks because they fail simple numeric tests (current ratio &lt; 1.5, debt/equity &gt; 2.0, P/E &gt; 25). The agent's reasoning is discarded.</div>
+  <div class="impact">Reverse the order: filter the universe first (cheap, fast), THEN have the agent reason about the survivors. Current order wastes API spend.</div>
+</div>
+
+<div class="bottleneck">
+  <span class="sev">critical</span><h4>P/E &lt; 25 is meaningless without sector context</h4>
+  <div class="desc">Banks trade at P/E 8, SaaS at 50, utilities at 18. A flat P/E gate either rejects entire industries or accepts overpriced names in cheap sectors. Same problem for P/B, debt/equity, current ratio.</div>
+  <div class="impact">Need sector-relative percentile ranking. "Bottom quartile P/E in its sector" is a real value signal; "P/E &lt; 25" is noise.</div>
+</div>
+
+<div class="bottleneck">
+  <span class="sev med">high</span><h4>No insider-buying signal</h4>
+  <div class="desc">Open-market insider purchases (Form 4) are one of the most-validated value signals in academic finance (Lakonishok &amp; Lee 2001, Cohen-Malloy-Pomorski 2012). SEC publishes Form 4 free; Polygon and Financial Datasets both expose clean APIs. We have keys for both. Currently fetch zero insider data.</div>
+  <div class="impact">Adding insider buying as a discovery signal would surface stocks where management is voting with their wallets — independent of Reddit hype.</div>
+</div>
+
+<div class="bottleneck">
+  <span class="sev med">high</span><h4>No intrinsic value calculation</h4>
+  <div class="desc">The agent reasons about catalysts and momentum but never computes what a stock should be worth. Reverse-DCF (solve for implied growth that justifies today's price) is ~30 lines of Python — no API needed.</div>
+  <div class="impact">Without intrinsic value, "cheap" is a vibe. With it, you can say <em>"this stock needs 18% revenue growth for 10 years to justify its price, and has been growing 4%"</em>.</div>
+</div>
+
+<div class="bottleneck">
+  <span class="sev med">medium</span><h4>Regex ticker extraction is fragile</h4>
+  <div class="desc"><code>_extract_candidate_tickers_from_report</code> expects the agent to write headings as <code>**Company Name (TICKER)**</code>. The agent's format drifts run-to-run; when it doesn't match, the hard-screen review section is silently empty. Run #17 produced 9 visible tickers but the regex extracted zero.</div>
+  <div class="impact">An LLM extractor (<code>gpt-4.1-nano</code>) is wired as a fallback — but only fires when regex returns empty. Need a deterministic output schema: agent must emit structured JSON, not prose.</div>
+</div>
+
+<div class="bottleneck">
+  <span class="sev low">low</span><h4>Reddit summarizer is sequential</h4>
+  <div class="desc">The Reddit discovery summarizes posts in batches of 50 sequentially with <code>gpt-5.4-nano</code>. With 60 posts, that's 2 sequential LLM calls. Could run in parallel via <code>asyncio.gather</code>.</div>
+  <div class="impact">Minor: shaves 5-10 seconds off each run. Low priority.</div>
+</div>
+
+<h2>3. Proposed: The Quant Funnel</h2>
+
+<p>
+Flip the order. Start with a fundamental universe, narrow it deterministically through cheap numeric filters, then spend agent reasoning only on the survivors. Reddit becomes one input at the catalyst stage, not the discovery driver.
+</p>
+
+<div class="funnel">
+  <div class="funnel-stage">
+    <div class="funnel-num">1</div>
+    <div class="funnel-body">
+      <div class="name">Universe</div>
+      <div class="what">S&amp;P 1500 + TSX Composite + Russell 1000 — fetched from Polygon snapshots or hard-coded ticker lists</div>
+    </div>
+    <div class="funnel-count">~3,000 tickers</div>
+  </div>
+  <div class="funnel-stage">
+    <div class="funnel-num">2</div>
+    <div class="funnel-body">
+      <div class="name">Numeric screen</div>
+      <div class="what">P/E, FCF yield, debt/equity, current ratio, market cap, liquidity — parallel yfinance fetch with ThreadPoolExecutor</div>
+    </div>
+    <div class="funnel-count">~100 survivors</div>
+  </div>
+  <div class="funnel-stage">
+    <div class="funnel-num">3</div>
+    <div class="funnel-body">
+      <div class="name">Quality overlay</div>
+      <div class="what">ROIC, gross-margin trend, FCF consistency, <strong>sector-relative percentile ranking</strong> on each multiple</div>
+    </div>
+    <div class="funnel-count">~30</div>
+  </div>
+  <div class="funnel-stage">
+    <div class="funnel-num">4</div>
+    <div class="funnel-body">
+      <div class="name">Valuation gap</div>
+      <div class="what"><strong>Reverse-DCF implied growth</strong>, analyst-target delta, EV/EBITDA vs peers — explicit margin of safety per stock</div>
+    </div>
+    <div class="funnel-count">~10</div>
+  </div>
+  <div class="funnel-stage">
+    <div class="funnel-num">5</div>
+    <div class="funnel-body">
+      <div class="name">Catalyst overlay</div>
+      <div class="what"><strong>Insider buys (Form 4 via Financial Datasets)</strong>, earnings revisions, Reddit chatter (demoted), recent news — annotate the 10</div>
+    </div>
+    <div class="funnel-count">~10 (annotated)</div>
+  </div>
+  <div class="funnel-stage">
+    <div class="funnel-num">6</div>
+    <div class="funnel-body">
+      <div class="name">Agent deep-dive</div>
+      <div class="what">gpt-5.4-mini writes thesis + risks + entry strategy on the 10 survivors only. Structured JSON output so persistence is deterministic.</div>
+    </div>
+    <div class="funnel-count">final report</div>
+  </div>
+</div>
+
+<div class="panel good">
+  <strong>Key shift:</strong> the agent stops doing discovery (where LLMs are weak) and only does narrative thesis writing on a pre-vetted shortlist (where LLMs are strong). Reddit becomes signal, not driver.
+</div>
+
+<h3>New tools to add</h3>
+
+<table>
+  <tr><th>Tool</th><th>Source</th><th>What it returns</th></tr>
+  <tr><td><code>get_insider_trades(ticker)</code></td><td>Financial Datasets API</td><td>Form 4 transactions (open-market buys vs option exercises), 90-day net buying $</td></tr>
+  <tr><td><code>compute_reverse_dcf(ticker)</code></td><td>local — uses yfinance FCF</td><td>Implied growth rate needed in years 1-10 to justify current EV</td></tr>
+  <tr><td><code>get_sector_medians(sector)</code></td><td>local — computed from screened universe</td><td>Median P/E, P/B, EV/EBITDA, ROIC for each GICS sector</td></tr>
+  <tr><td><code>get_analyst_target_delta(ticker)</code></td><td>yfinance (already wired)</td><td>(mean target − current price) / current price; surfaces analyst-implied upside</td></tr>
+  <tr><td><code>get_earnings_revisions(ticker)</code></td><td>Financial Datasets API</td><td>EPS estimate changes over 30/60/90 days — momentum signal</td></tr>
+</table>
+
+<h3>What stays the same</h3>
+<ul>
+  <li>The Agno framework, tool wrapper pattern, and JSON state files all carry over.</li>
+  <li>SQLite persistence schema is unchanged — same tables, same fields.</li>
+  <li>The turnaround-style deep dossier still runs, just on better-selected candidates.</li>
+  <li>The hard-screen rules still gate the final list (belt &amp; suspenders).</li>
+</ul>
+
+<h2>4. Implementation plan</h2>
+
+<table>
+  <tr><th>Phase</th><th>Work</th><th>Effort</th></tr>
+  <tr><td>A</td><td>Universe loader (S&amp;P 500 + TSX Composite + Russell 1000 ticker lists, cached)</td><td>~30 min</td></tr>
+  <tr><td>B</td><td>Parallel numeric screener (ThreadPoolExecutor over yfinance)</td><td>~45 min</td></tr>
+  <tr><td>C</td><td>Sector-relative ranking (compute medians, percentile-rank each metric)</td><td>~45 min</td></tr>
+  <tr><td>D</td><td>Reverse-DCF calculator (pure Python, no API)</td><td>~30 min</td></tr>
+  <tr><td>E</td><td>Insider trades tool (Financial Datasets REST wrapper)</td><td>~30 min</td></tr>
+  <tr><td>F</td><td>Funnel orchestrator + reduce Reddit to one signal among many</td><td>~45 min</td></tr>
+  <tr><td>G</td><td>Structured JSON output schema for agent deep-dive (replaces fragile regex extraction)</td><td>~30 min</td></tr>
+  <tr><td>H</td><td>Tests, live smoke, docs update</td><td>~30 min</td></tr>
+</table>
+
+<p style="color: var(--muted); font-size: 13px; margin-top: 12px;">Total: ~4 hours focused work. Each phase is independently mergeable.</p>
+
+<h2>5. How we'll know it worked — DELIVERED</h2>
+
+<table>
+  <tr><th>Metric</th><th>Before (run #17)</th><th>Target</th><th>Run #18 (funnel, smoke)</th></tr>
+  <tr><td>Stocks saved per run</td><td class="status bad">0</td><td class="status ok">5-10</td><td class="status ok">7 accepted, 3 rejected w/ reasons</td></tr>
+  <tr><td>Discovery source</td><td class="status bad">100% Reddit</td><td class="status ok">fundamental-first</td><td class="status ok">100% from deterministic funnel; Reddit overlay only</td></tr>
+  <tr><td>Wall-clock time</td><td>2m 41s</td><td>~3-4 min full universe</td><td class="status ok">23s (150 tickers) + 15s deep-dive</td></tr>
+  <tr><td>Sector coverage</td><td>1-2 (Canadian micro-caps)</td><td>≥5 sectors</td><td class="status ok">5 sectors (Healthcare, Financial, Tech, Industrials, Consumer)</td></tr>
+  <tr><td>API cost per run</td><td>~$0.30-0.50</td><td>~$0.10-0.20</td><td class="status ok">~$0.05 (deep-dive only)</td></tr>
+  <tr><td>Insider-validated picks</td><td class="status bad">0%</td><td>≥40%</td><td class="status ok">BSX (3 buyers, $554K), BIIB (1 buyer); 30% of accepts had net buying</td></tr>
+</table>
+
+<div class="panel good">
+  <strong>Actual run #18 picks:</strong> BSX (8.4), AMP (8.0), BRO (7.8), ADP (7.6), ACN (7.3), BIIB (7.1), ALLE (7.0).
+  <strong>Rejected with reasons:</strong> AOS (China slowdown), BBY (insider selling + weak comps), ALGN (high debt, weak ROE).
+</div>
+
+<h2>6. Risks &amp; tradeoffs</h2>
+
+<div class="panel warn">
+  <strong>yfinance rate limits.</strong> Scanning 3,000 tickers in parallel will hit yfinance's unofficial rate limit. Mitigation: throttle to 10 concurrent calls, cache results for 24h, fall back to Polygon snapshot endpoint for bulk data.
+</div>
+
+<div class="panel warn">
+  <strong>Sector medians need a baseline.</strong> First run has no historical median data. Mitigation: compute medians from the current universe scan (live, every run) rather than from cached history — slightly more compute, no warm-up problem.
+</div>
+
+<div class="panel warn">
+  <strong>Reddit users may complain.</strong> If the bot stops surfacing the meme stocks they expected, satisfaction may drop short-term. Mitigation: keep a small "Reddit echo" section in the report listing the most-discussed tickers separately, even if none made the funnel cut.
+</div>
+
+<div class="panel">
+  <strong>Reverse-DCF assumptions are sensitive.</strong> Discount rate and terminal growth materially affect the implied-growth output. Mitigation: report a range (8%, 10%, 12% discount rates) rather than a single number.
+</div>
+
+<footer>
+  Stock Analysis Bot — internal design doc · for review &amp; iteration · see <code>plan.md</code> if it exists, otherwise <code>README.md</code> for the current architecture.
+</footer>
+
+</div>
+</body>
+</html>

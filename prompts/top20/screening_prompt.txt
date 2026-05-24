@@ -1,0 +1,20 @@
+Current Date and Time: {timestamp}
+
+Build an initial universe of 40-60 candidates for a {strategy} portfolio with {risk_tolerance} risk tolerance and a {time_horizon}-year horizon.
+
+User preferences:
+- Minimum market cap: ${min_market_cap}B
+- Maximum position size: {max_position_size_pct}%
+- Preferred sectors: {preferred_sectors}
+- Excluded sectors (NEVER include): {excluded_sectors}
+- ESG focus: {esg_focus}
+- Dividend focus: {dividend_focus}
+- International exposure: {international_exposure}
+
+Use the data tools to verify each candidate. Surface stocks that:
+- Match the strategy (growth: revenue/EPS growth >15% YoY; value: P/E below sector median + strong cash flow; balanced: both).
+- Meet the market cap floor.
+- Have liquidity (avg daily volume > 500K shares).
+- Are not in excluded sectors.
+
+Produce a numbered list with ticker, sector, market cap, P/E, and a one-sentence thesis per candidate.
