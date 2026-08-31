@@ -103,12 +103,12 @@ class QuantFunnel:
     top_n_final: int = 10
     universe: Optional[List[Ticker]] = None
     force_refresh: bool = False
-    workers: int = 10
+    workers: int = 5
 
     def run(self) -> Dict[str, Any]:
         """Execute stages 1-5. Returns a dict with the shortlist + stats."""
         # Stage 1: Universe
-        universe = self.universe or load_universe()
+        universe = self.universe if self.universe is not None else load_universe()
         stage_stats: Dict[str, Any] = {"stage_1_universe_size": len(universe)}
 
         # Stage 2: Numeric screen

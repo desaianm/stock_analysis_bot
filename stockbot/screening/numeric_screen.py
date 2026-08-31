@@ -1,24 +1,26 @@
 """Parallel numeric screening over the universe.
 
 Per ticker, fetches yfinance `info` (one HTTP call) and extracts the metrics
-needed for the funnel's deterministic stages. Runs 10 concurrent threads to
-keep the full ~1,300-ticker scan under 4 minutes.
+needed for the funnel's deterministic stages. The initial pass uses five
+threads, followed by two bounded low-concurrency retry passes for failures.
 
 Results cache to ``state/numeric_screen_cache.json`` for 24h. Reuse requires
-the same cache schema and exact requested ticker universe.
+the same cache schema, exact requested ticker universe, and an acceptable
+recorded failure fraction.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Sequence
 
 import yfinance as yf
 
@@ -26,7 +28,12 @@ from stockbot.screening.universe import Ticker, load_universe
 
 CACHE_PATH = Path(__file__).resolve().parent.parent.parent / "state" / "numeric_screen_cache.json"
 CACHE_TTL_SECONDS = 24 * 3600
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
+MAX_FAILURE_FRACTION = 0.20
+CACHE_CLOCK_SKEW_SECONDS = 1.0
+DEFAULT_WORKERS = 5
+DEFAULT_RETRY_WORKERS = 2
+DEFAULT_RETRY_DELAYS = (2.0, 5.0)
 
 
 @dataclass
@@ -83,6 +90,38 @@ class StockSnapshot:
         return None
 
 
+REQUIRED_NUMERIC_FIELDS = (
+    "price", "volume", "market_cap", "debt_to_equity", "current_ratio",
+    "free_cash_flow",
+)
+
+
+def _finite_real(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _snapshot_completeness_error(snapshot: StockSnapshot) -> Optional[str]:
+    missing = [
+        field_name for field_name in REQUIRED_NUMERIC_FIELDS
+        if not _finite_real(getattr(snapshot, field_name))
+    ]
+    effective_pe = snapshot.trailing_pe if snapshot.trailing_pe is not None else snapshot.forward_pe
+    if not _finite_real(effective_pe):
+        missing.append("effective_pe")
+    if missing:
+        return "missing or non-finite required metrics: " + ", ".join(missing)
+    return None
+
+
+def _aware_datetime(value: object, label: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be an ISO timestamp")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{label} must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
 def _historical_fcf_growth(stock: yf.Ticker) -> Optional[float]:
     """CAGR of free cash flow across available annual cash-flow statements."""
     try:
@@ -100,13 +139,20 @@ def _historical_fcf_growth(stock: yf.Ticker) -> Optional[float]:
                 break
         if row_key is None:
             return None
-        values = [float(v) for v in cf.loc[row_key].tolist() if v == v]  # drop NaN
+        values = [float(value) for value in cf.loc[row_key].tolist()]
         # We want oldest -> newest order
         values = list(reversed(values))
-        if len(values) < 2 or values[0] <= 0:
+        if (
+            len(values) < 2
+            or not all(math.isfinite(value) for value in values)
+            or any(value <= 0 for value in values)
+        ):
             return None
         years = len(values) - 1
-        return (values[-1] / values[0]) ** (1 / years) - 1
+        growth = (values[-1] / values[0]) ** (1 / years) - 1
+        if isinstance(growth, complex) or not math.isfinite(growth):
+            return None
+        return growth
     except Exception:
         return None
 
@@ -117,6 +163,8 @@ def fetch_snapshot(t: Ticker) -> StockSnapshot:
         stock = yf.Ticker(t.symbol)
         info = stock.info or {}
 
+        if not info:
+            raise ValueError("Yahoo info is empty")
         d2e = info.get("debtToEquity")
         if d2e is not None:
             # Yahoo defines debtToEquity in percentage points (e.g. 125 = 1.25x).
@@ -147,6 +195,7 @@ def fetch_snapshot(t: Ticker) -> StockSnapshot:
             historical_fcf_growth=_historical_fcf_growth(stock),
             fetched_at=datetime.now(timezone.utc).isoformat(),
         )
+        snap.error = _snapshot_completeness_error(snap)
         return snap
     except Exception as exc:  # noqa: BLE001
         return StockSnapshot(
@@ -161,7 +210,17 @@ def fetch_snapshot(t: Ticker) -> StockSnapshot:
 def _cache_is_fresh() -> bool:
     if not CACHE_PATH.exists():
         return False
-    return (time.time() - CACHE_PATH.stat().st_mtime) < CACHE_TTL_SECONDS
+    now = time.time()
+    mtime_age = now - CACHE_PATH.stat().st_mtime
+    if mtime_age < -CACHE_CLOCK_SKEW_SECONDS or mtime_age >= CACHE_TTL_SECONDS:
+        return False
+    try:
+        payload = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+        generated_at = _aware_datetime(payload.get("generated_at"), "generated_at")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    payload_age = now - generated_at.timestamp()
+    return -CACHE_CLOCK_SKEW_SECONDS <= payload_age < CACHE_TTL_SECONDS
 
 
 def _universe_identity(tickers: Iterable[Ticker]) -> List[Dict[str, str]]:
@@ -178,16 +237,54 @@ def _read_cache(tickers: Iterable[Ticker]) -> List[StockSnapshot]:
         raise ValueError("numeric cache schema mismatch")
     if payload.get("ticker_universe") != _universe_identity(tickers):
         raise ValueError("numeric cache universe mismatch")
-    return [StockSnapshot.from_dict(d) for d in payload["snapshots"]]
+    snapshots = [StockSnapshot.from_dict(d) for d in payload["snapshots"]]
+    generated_at = _aware_datetime(payload.get("generated_at"), "generated_at")
+    now = datetime.now(timezone.utc)
+    if generated_at > now or now - generated_at >= timedelta(seconds=CACHE_TTL_SECONDS):
+        raise ValueError("numeric cache generated_at is future or stale")
+    if any(snapshot.error or _snapshot_completeness_error(snapshot) for snapshot in snapshots):
+        raise ValueError("numeric cache contains failed or incomplete snapshots")
+    for snapshot in snapshots:
+        fetched_at = _aware_datetime(snapshot.fetched_at, "fetched_at")
+        if fetched_at > now or now - fetched_at >= timedelta(seconds=CACHE_TTL_SECONDS):
+            raise ValueError("numeric cache snapshot fetched_at is future or stale")
+    success_count = sum(snapshot.error is None for snapshot in snapshots)
+    failure_count = len(snapshots) - success_count
+    if payload.get("count") != len(snapshots):
+        raise ValueError("numeric cache count mismatch")
+    if payload.get("success_count") != success_count:
+        raise ValueError("numeric cache success count mismatch")
+    if payload.get("failure_count") != failure_count:
+        raise ValueError("numeric cache failure count mismatch")
+    failure_fraction = failure_count / len(snapshots) if snapshots else 0.0
+    if failure_fraction > MAX_FAILURE_FRACTION:
+        raise ValueError("numeric cache failure fraction exceeds maximum")
+    snapshot_by_identity = {
+        (snapshot.symbol, snapshot.exchange, snapshot.source): snapshot
+        for snapshot in snapshots
+    }
+    try:
+        return [
+            snapshot_by_identity[(ticker.symbol, ticker.exchange, ticker.source)]
+            for ticker in tickers
+        ]
+    except KeyError as exc:
+        raise ValueError("numeric cache snapshot identity mismatch") from exc
 
 
 def _write_cache(snaps: List[StockSnapshot], tickers: Iterable[Ticker]) -> None:
+    success_count = sum(snapshot.error is None for snapshot in snaps)
+    failure_count = len(snaps) - success_count
+    if failure_count or any(_snapshot_completeness_error(snapshot) for snapshot in snaps):
+        raise ValueError("refusing to write failed or incomplete numeric cache")
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": CACHE_SCHEMA_VERSION,
         "ticker_universe": _universe_identity(tickers),
-        "generated_at": time.time(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "count": len(snaps),
+        "success_count": success_count,
+        "failure_count": failure_count,
         "snapshots": [s.to_dict() for s in snaps],
     }
     contents = json.dumps(payload, indent=2, default=str)
@@ -208,11 +305,14 @@ def _write_cache(snaps: List[StockSnapshot], tickers: Iterable[Ticker]) -> None:
 
 def scan_universe(
     tickers: Optional[Iterable[Ticker]] = None,
-    workers: int = 10,
+    workers: int = DEFAULT_WORKERS,
     force_refresh: bool = False,
     progress_every: int = 100,
+    retry_workers: int = DEFAULT_RETRY_WORKERS,
+    retry_delays: Sequence[float] = DEFAULT_RETRY_DELAYS,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> List[StockSnapshot]:
-    """Parallel-fetch metrics for the full universe. Caches 24h."""
+    """Fetch metrics with bounded retries and reject low-quality results."""
     if tickers is None:
         tickers = load_universe()
     tickers = list(tickers)
@@ -223,24 +323,56 @@ def scan_universe(
             pass
 
     print(f"Scanning {len(tickers)} tickers with {workers} workers...")
-    snaps: List[StockSnapshot] = []
+    snaps: List[Optional[StockSnapshot]] = [None] * len(tickers)
     start = time.time()
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(fetch_snapshot, t): t for t in tickers}
+        futures = {pool.submit(fetch_snapshot, ticker): index for index, ticker in enumerate(tickers)}
         for i, future in enumerate(as_completed(futures), 1):
-            snaps.append(future.result())
+            snaps[futures[future]] = future.result()
             if i % progress_every == 0:
                 elapsed = time.time() - start
                 rate = i / elapsed
                 eta = (len(tickers) - i) / rate if rate > 0 else 0
                 print(f"  {i}/{len(tickers)} done  ({elapsed:.0f}s elapsed, ~{eta:.0f}s remaining)")
 
-    ok = [s for s in snaps if not s.error]
-    failed = [s for s in snaps if s.error]
+    for retry_number, delay in enumerate(retry_delays, 1):
+        failed_indexes = [
+            index for index, snapshot in enumerate(snaps)
+            if snapshot is not None and snapshot.error
+        ]
+        if not failed_indexes:
+            break
+        print(
+            f"Retry {retry_number}/{len(retry_delays)}: "
+            f"{len(failed_indexes)} failed tickers with {retry_workers} workers"
+        )
+        sleep(delay)
+        with ThreadPoolExecutor(max_workers=retry_workers) as pool:
+            futures = {
+                pool.submit(fetch_snapshot, tickers[index]): index
+                for index in failed_indexes
+            }
+            for future in as_completed(futures):
+                snaps[futures[future]] = future.result()
+
+    complete_snaps = [snapshot for snapshot in snaps if snapshot is not None]
+    if len(complete_snaps) != len(tickers):
+        raise RuntimeError("numeric scan did not produce a snapshot for every requested ticker")
+    ok = [snapshot for snapshot in complete_snaps if not snapshot.error]
+    failed = [snapshot for snapshot in complete_snaps if snapshot.error]
     print(f"Scan complete: {len(ok)} ok, {len(failed)} failed, total {time.time() - start:.0f}s")
 
-    _write_cache(snaps, tickers)
-    return snaps
+    failure_fraction = len(failed) / len(complete_snaps) if complete_snaps else 0.0
+    if failure_fraction > MAX_FAILURE_FRACTION:
+        raise RuntimeError(
+            "numeric scan quality below threshold: "
+            f"{len(failed)} failed of {len(complete_snaps)} "
+            f"({failure_fraction:.1%} > {MAX_FAILURE_FRACTION:.1%})"
+        )
+
+    if not failed and all(not _snapshot_completeness_error(snapshot) for snapshot in complete_snaps):
+        _write_cache(complete_snaps, tickers)
+    return complete_snaps
 
 
 @dataclass
