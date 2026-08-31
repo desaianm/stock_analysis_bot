@@ -1,43 +1,47 @@
 """Daily portfolio tracking using Discord task loops."""
 
-import pytz
 from datetime import datetime, time
+from typing import Callable, Optional
+from zoneinfo import ZoneInfo
+
 from discord.ext import tasks
 
 from stockbot.flows.performance_tracker import PerformanceTrackerFlow
 
-ny_timezone = pytz.timezone("America/New_York")
+ny_timezone = ZoneInfo("America/New_York")
 
 
 class DailyPortfolioScheduler:
     """Schedules daily portfolio performance updates using Discord task loops."""
 
-    def __init__(self):
+    def __init__(self, now: Optional[Callable[[], datetime]] = None):
         """Initialize scheduler with NY timezone."""
         self.tracker = PerformanceTrackerFlow()
         self._task_started = False
+        self._now = now or (lambda: datetime.now(ny_timezone))
 
     async def daily_portfolio_update(self):
         """
         Run daily portfolio update at 5 PM ET (after market close).
 
         Updates all active holdings with current prices, validates catalysts,
-        and generates learning insights daily.
+        and generates learning insights on Sundays.
         """
-        print(f"\n[{datetime.now(ny_timezone)}] Starting daily portfolio update...")
+        now = self._now().astimezone(ny_timezone)
+        print(f"\n[{now}] Starting daily portfolio update...")
 
         try:
             # Update all holdings with current prices
             await self.tracker.update_all_holdings()
 
-            # Generate learning insights daily (after price updates)
-            print("  Generating daily learning insights...")
-            await self.tracker.generate_weekly_learning_insights()
+            if now.weekday() == 6:
+                print("  Generating weekly learning insights...")
+                await self.tracker.generate_weekly_learning_insights()
 
-            print(f"[{datetime.now(ny_timezone)}] Daily portfolio update completed")
+            print(f"[{self._now().astimezone(ny_timezone)}] Daily portfolio update completed")
 
         except Exception as e:
-            print(f"[{datetime.now(ny_timezone)}] Error during daily update: {e}")
+            print(f"[{self._now().astimezone(ny_timezone)}] Error during daily update: {e}")
 
     def create_task(self):
         """Create and return the Discord task loop.

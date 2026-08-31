@@ -103,8 +103,9 @@ OPENAI_API_KEY=...
 DISCORD_TOKEN=...
 TAVILY_API_KEY=...                 # optional; web search falls back to DDGS
 EXA_API_KEY=...                    # optional; alternative web search
-REDDIT_CLIENT_ID=...               # optional; for direct PRAW use (not currently wired)
-REDDIT_CLIENT_SECRET=...           # optional
+REDDIT_CLIENT_ID=...               # optional; enables authenticated Reddit catalyst requests
+REDDIT_CLIENT_SECRET=...           # optional; paired with REDDIT_CLIENT_ID
+REDDIT_USER_AGENT=...              # optional; defaults to stock-analysis-bot/1.0
 ```
 
 ## Run

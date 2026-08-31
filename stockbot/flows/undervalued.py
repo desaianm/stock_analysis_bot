@@ -9,7 +9,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import pytz
 import requests
@@ -17,7 +17,7 @@ from agno.agent import Agent
 from agno.media import Image
 from agno.models.openai import OpenAIChat
 from agno.utils.log import configure_agno_logging
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 try:
     import tiktoken  # type: ignore
@@ -29,6 +29,7 @@ from stockbot.database.manager import StockDatabaseManager
 from stockbot.database.performance_manager import PerformanceTrackingManager
 from stockbot.screening.funnel import FunnelCandidate, QuantFunnel
 from stockbot.screening.numeric_screen import ScreeningGates
+from stockbot.tickers import normalize_ticker
 from stockbot.tools.data import (
     ChartingTool,
     CompanyInfoTool,
@@ -40,6 +41,7 @@ from stockbot.tools.data import (
     TavilySearchTool,
     WebSearchTool,
 )
+from stockbot.tools.reddit import RedditClient
 
 ny_timezone = pytz.timezone("America/New_York")
 
@@ -96,6 +98,59 @@ class ValueScreeningPreferences(BaseModel):
     )
 
 
+class DeepDiveReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reviewed_at: datetime
+    candidates_reviewed: int = Field(ge=0)
+    candidates_accepted: int = Field(ge=0)
+
+
+class DeepDiveStock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str = Field(min_length=1)
+    company_name: str = Field(min_length=1)
+    sector: str = Field(min_length=1)
+    verdict: Literal["accept", "reject"]
+    confidence_score: float = Field(ge=0, le=10)
+    thesis: str = Field(min_length=1)
+    key_risks: List[str] = Field(min_length=1)
+    primary_catalyst: str = Field(min_length=1)
+    entry_strategy: str = Field(min_length=1)
+    stop_loss_pct: float = Field(ge=0, le=1)
+    position_size_pct: float = Field(ge=0, le=1)
+    rejection_reason: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_rejection_reason(self) -> "DeepDiveStock":
+        if self.verdict == "accept" and self.position_size_pct <= 0:
+            raise ValueError("position_size_pct must be greater than 0 for accepted stocks")
+        if self.verdict == "reject" and self.position_size_pct != 0:
+            raise ValueError("position_size_pct must equal 0 for rejected stocks")
+        if self.verdict == "reject" and not self.rejection_reason:
+            raise ValueError("rejection_reason is required for rejected stocks")
+        if self.verdict == "accept" and self.rejection_reason is not None:
+            raise ValueError("rejection_reason must be omitted for accepted stocks")
+        return self
+
+
+class DeepDiveOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shortlist_review: DeepDiveReview
+    stocks: List[DeepDiveStock]
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> "DeepDiveOutput":
+        if self.shortlist_review.candidates_reviewed != len(self.stocks):
+            raise ValueError("candidates_reviewed must equal the stocks list length")
+        accepted = sum(stock.verdict == "accept" for stock in self.stocks)
+        if self.shortlist_review.candidates_accepted != accepted:
+            raise ValueError("candidates_accepted must equal accepted verdict count")
+        return self
+
+
 class UndervaluedAnalysisFlow:
     """Coordinates the undervalued stock analysis using an Agno agent."""
 
@@ -135,7 +190,7 @@ class UndervaluedAnalysisFlow:
         self.web_search_tool = WebSearchTool()
         self._token_encoder = self._load_token_encoder()
         self._chart_paths: list[str] = []
-        self._reddit_headers = {"User-Agent": "stock-analysis-bot/1.0"}
+        self._reddit_client = RedditClient.from_env()
         self._symbol_resolution_cache: Dict[str, str] = {}
         self._candidate_metrics_cache: Dict[str, Dict[str, Any]] = {}
 
@@ -611,7 +666,7 @@ class UndervaluedAnalysisFlow:
         normalized_query = query.upper()
 
         for subreddit in subs:
-            url = f"https://www.reddit.com/r/{subreddit}/search.json"
+            path = f"/r/{subreddit}/search"
             params = {
                 "q": f"{normalized_query} TSX"
                 if subreddit == "Baystreetbets"
@@ -622,9 +677,7 @@ class UndervaluedAnalysisFlow:
                 "t": "week",
             }
             try:
-                response = requests.get(
-                    url, headers=self._reddit_headers, params=params, timeout=15
-                )
+                response = self._reddit_client.get(path, params=params, timeout=15)
                 response.raise_for_status()
                 items = response.json().get("data", {}).get("children", [])
             except Exception as exc:  # pragma: no cover - relies on Reddit uptime
@@ -663,12 +716,10 @@ class UndervaluedAnalysisFlow:
         collected_posts: List[Dict[str, Any]] = []
 
         for subreddit in subs:
-            url = f"https://www.reddit.com/r/{subreddit}/new.json"
+            path = f"/r/{subreddit}/new"
             params = {"limit": str(max_posts // len(subs))}
             try:
-                response = requests.get(
-                    url, headers=self._reddit_headers, params=params, timeout=15
-                )
+                response = self._reddit_client.get(path, params=params, timeout=15)
                 response.raise_for_status()
                 items = response.json().get("data", {}).get("children", [])
             except Exception as exc:
@@ -1651,6 +1702,7 @@ Report:
             min_market_cap=p.min_market_cap,
             max_debt_equity=p.max_debt_equity,
             min_current_ratio=p.min_current_ratio,
+            max_decline_from_high=p.price_vs_high,
             require_positive_fcf=True,
         )
 
@@ -1694,7 +1746,9 @@ Report:
             reddit_overlay=reddit_overlay,
         )
 
-    def _parse_deep_dive_json(self, text: str) -> Optional[Dict[str, Any]]:
+    def _parse_deep_dive_json(
+        self, text: str, expected_tickers: List[str]
+    ) -> Optional[Dict[str, Any]]:
         """Parse the strict-JSON output from the deep-dive agent. Tolerate fences."""
         if not text:
             return None
@@ -1707,15 +1761,32 @@ Report:
             cleaned = cleaned[:-3]
         cleaned = cleaned.strip()
         try:
-            return json.loads(cleaned)
+            payload = json.loads(cleaned)
         except json.JSONDecodeError:
             match = re.search(r"\{.*\}", cleaned, re.DOTALL)
             if match:
                 try:
-                    return json.loads(match.group(0))
+                    payload = json.loads(match.group(0))
                 except json.JSONDecodeError:
                     return None
-            return None
+            else:
+                return None
+        validated = DeepDiveOutput.model_validate(payload).model_dump(mode="json")
+        expected = [normalize_ticker(ticker) for ticker in expected_tickers]
+        actual = [normalize_ticker(stock["ticker"]) for stock in validated["stocks"]]
+        if len(actual) != len(set(actual)):
+            raise ValueError("deep-dive output contains duplicate tickers")
+        unexpected = sorted(set(actual) - set(expected))
+        if unexpected:
+            raise ValueError(f"deep-dive output contains unexpected tickers: {unexpected}")
+        omitted = sorted(set(expected) - set(actual))
+        if omitted:
+            raise ValueError(f"deep-dive output omitted expected tickers: {omitted}")
+        if len(expected) != len(set(expected)):
+            raise ValueError("expected shortlist contains duplicate tickers")
+        for stock, ticker in zip(validated["stocks"], actual):
+            stock["ticker"] = ticker
+        return validated
 
     async def _save_funnel_stocks(
         self,
@@ -1737,7 +1808,7 @@ Report:
             exchange = "TSX" if snap.exchange == "TSX" else "US"
             find_data = {
                 "analysis_run_id": self.current_run_id,
-                "ticker": ticker.split(".")[0],
+                "ticker": ticker,
                 "company_name": stock.get("company_name") or ticker,
                 "exchange": exchange,
                 "sector": snap.sector,
@@ -1746,7 +1817,11 @@ Report:
                 "confidence_score": float(stock.get("confidence_score") or 5.0),
                 "current_price": snap.price,
                 "market_cap": snap.market_cap,
-                "pe_ratio": snap.trailing_pe or snap.forward_pe,
+                "pe_ratio": (
+                    snap.trailing_pe
+                    if snap.trailing_pe is not None
+                    else snap.forward_pe
+                ),
                 "debt_to_equity": snap.debt_to_equity,
                 "current_ratio": snap.current_ratio,
                 "price_to_book": snap.price_to_book,
@@ -1890,7 +1965,9 @@ Report:
                 self._log_prompt_size("Deep-dive prompt", prompt)
                 response = await self.deep_dive_agent.arun(prompt)
                 raw_text = self._extract_content(response)
-                deep_dive_dict = self._parse_deep_dive_json(raw_text)
+                deep_dive_dict = self._parse_deep_dive_json(
+                    raw_text, [candidate.symbol for candidate in shortlist]
+                )
                 if deep_dive_dict is None:
                     print("  WARN: deep-dive JSON parse failed; raw output saved")
                     await self.save_phase_output(
@@ -2003,8 +2080,7 @@ Report:
         if not permalink:
             return comments
         try:
-            url = f"{permalink}.json"
-            response = requests.get(url, headers=self._reddit_headers, timeout=15)
+            response = self._reddit_client.get(permalink, timeout=15)
             response.raise_for_status()
             threads = response.json()
             if len(threads) > 1:

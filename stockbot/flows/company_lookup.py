@@ -12,6 +12,7 @@ from agno.agent import Agent
 from agno.models.openai import OpenAIChat
 
 from stockbot.tools.data import TavilySearchTool, WebSearchTool
+from stockbot.tickers import normalize_ticker
 
 EXTRACTION_MODEL_ID = "gpt-4.1-nano"
 
@@ -92,8 +93,12 @@ def _parse_json_payload(text: str) -> Optional[Dict[str, str]]:
         except json.JSONDecodeError:
             return None
     if isinstance(payload, dict) and "ticker" in payload:
+        try:
+            ticker = normalize_ticker(str(payload.get("ticker", "")))
+        except ValueError:
+            return None
         return {
-            "ticker": str(payload.get("ticker", "")).strip().upper(),
+            "ticker": ticker,
             "company_name": str(payload.get("company_name", "")).strip(),
             "company_info": str(payload.get("company_info", "")).strip(),
         }

@@ -62,7 +62,7 @@ class FunnelCandidate:
     def to_prompt_summary(self) -> Dict[str, Any]:
         """Condensed form suitable for an LLM prompt (smaller token footprint)."""
         s = self.snapshot
-        pe = s.trailing_pe or s.forward_pe
+        pe = s.trailing_pe if s.trailing_pe is not None else s.forward_pe
         return {
             "ticker": self.symbol,
             "sector": self.sector,

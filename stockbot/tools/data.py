@@ -4,6 +4,7 @@ import random
 import re
 from datetime import datetime
 from html import unescape
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -299,18 +300,22 @@ class ChartingTool(BaseTool):
         years = list(range(len(data)))
         bar_color = f'#{random.randint(0, 0xFFFFFF):06x}'
 
-        os.makedirs("plots", exist_ok=True)
+        plots_dir = Path("plots").resolve()
+        plots_dir.mkdir(parents=True, exist_ok=True)
         
         plt.figure(figsize=(10, 6))  # Create a new figure
         plt.bar(years, data, color=bar_color)
         plt.xlabel('Years')
         plt.title(metric_name)
         
-        file_path = f"plots/{metric_name.replace(' ', '_')}_chart.png"
+        slug = re.sub(r"[^a-z0-9]+", "_", metric_name.lower()).strip("_") or "metric"
+        file_path = plots_dir / f"{slug}_chart.png"
+        if not file_path.resolve().is_relative_to(plots_dir):
+            raise ValueError("chart output path escapes plots directory")
         plt.savefig(file_path, format='png')
         plt.close()  # Close the figure to free up memory
         
-        return CreateChartOutput(file_path=file_path)
+        return CreateChartOutput(file_path=str(file_path))
 
 
 class FinancialReportToolInput(BaseModel):

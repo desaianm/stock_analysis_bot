@@ -185,7 +185,11 @@ class PerformanceTrackerFlow:
                 f"  Daily update completed: {len(valid_holdings)} holdings updated, "
                 f"{len(failed)} skipped due to verification failure"
             )
-            await self._save_performance_snapshots(valid_holdings)
+            updated_holdings = self.db.get_active_holdings()
+            valid_updated_holdings = [
+                holding for holding in updated_holdings if holding["ticker"] not in failed
+            ]
+            await self._save_performance_snapshots(valid_updated_holdings)
         except Exception as e:
             print(f"  Error during daily update: {e}")
 
