@@ -26,6 +26,7 @@ from stockbot.tools.data import (
     TavilySearchTool,
     AnalystRecommendationsTool,
 )
+from stockbot.tickers import normalize_ticker
 
 ny_timezone = pytz.timezone("America/New_York")
 
@@ -53,7 +54,7 @@ class SingleStockAnalysisFlow:
     """Coordinates single stock analysis using Agno agents."""
 
     def __init__(self, ticker: str):
-        self.ticker = ticker.upper()
+        self.ticker = normalize_ticker(ticker)
         self.output_dir = Path("outputs/stock_analysis")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.model_id = "gpt-5.4-mini"

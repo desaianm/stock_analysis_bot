@@ -79,6 +79,8 @@ def _peer_metric_values(peers: List[StockSnapshot], attr: str) -> List[float]:
     out: List[float] = []
     for p in peers:
         v = getattr(p, attr, None)
+        if attr == "effective_pe":
+            v = p.trailing_pe if p.trailing_pe is not None else p.forward_pe
         if attr == "fcf_yield":
             v = p.fcf_yield
         if v is None:
@@ -103,14 +105,15 @@ def rank_by_sector(snaps: List[StockSnapshot], min_sector_size: int = 5) -> List
     out: List[RankedStock] = []
 
     for sector, peers in groups.items():
-        pe_peers = _peer_metric_values(peers, "trailing_pe")
-        pb_peers = _peer_metric_values(peers, "price_to_book")
-        fcf_peers = _peer_metric_values(peers, "fcf_yield")
-        de_peers = _peer_metric_values(peers, "debt_to_equity")
-        roe_peers = _peer_metric_values(peers, "return_on_equity")
+        comparison_peers = snaps if len(peers) < min_sector_size else peers
+        pe_peers = _peer_metric_values(comparison_peers, "effective_pe")
+        pb_peers = _peer_metric_values(comparison_peers, "price_to_book")
+        fcf_peers = _peer_metric_values(comparison_peers, "fcf_yield")
+        de_peers = _peer_metric_values(comparison_peers, "debt_to_equity")
+        roe_peers = _peer_metric_values(comparison_peers, "return_on_equity")
 
         for s in peers:
-            pe_val = s.trailing_pe or s.forward_pe
+            pe_val = s.trailing_pe if s.trailing_pe is not None else s.forward_pe
             ranked = RankedStock(snapshot=s, sector_size=len(peers))
 
             ranked.pe_percentile = _percentile_rank(pe_val, pe_peers, lower_is_better=True)
@@ -147,7 +150,8 @@ def rank_by_sector(snaps: List[StockSnapshot], min_sector_size: int = 5) -> List
     # Sort by composite score (cheapest + highest-quality first), missing-score last
     out.sort(
         key=lambda r: (
-            -1 if r.composite_value_score is None else -r.composite_value_score,
+            r.composite_value_score is None,
+            -(r.composite_value_score or 0.0),
             r.snapshot.symbol,
         )
     )
