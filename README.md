@@ -100,6 +100,7 @@ Create a `.env` (do not commit):
 
 ```bash
 OPENAI_API_KEY=...
+FINANCIAL_DATASETS_API_KEY=...      # required for undervalued analysis
 DISCORD_TOKEN=...
 TAVILY_API_KEY=...                 # optional; web search falls back to DDGS
 EXA_API_KEY=...                    # optional; alternative web search
@@ -109,6 +110,106 @@ REDDIT_USER_AGENT=...              # optional; defaults to stock-analysis-bot/1.
 ```
 
 ## Run
+
+### Daily CLI
+
+The canonical interface for an unattended morning undervalued-stock report is:
+
+```bash
+python -m stockbot.cli daily
+```
+
+This loads `.env`, runs the same deterministic-first `UndervaluedAnalysisFlow` and
+default value-screening preferences as the Discord `/undervalued` command, and
+atomically saves the complete returned Markdown under `reports/`. The daily CLI
+defaults to a 300-symbol daily window of the S&P 500 to stay below the observed
+Yahoo per-run throttle threshold. The source universe is de-duplicated and
+sorted by symbol, then the window rotates deterministically from the UTC run
+date and wraps at the end. Successive daily runs therefore cover the full
+source without permanently favoring alphabetically early symbols. Re-running
+on the same date selects the same symbols. Discord `/undervalued` remains
+full-universe.
+Daily CLI runs require `OPENAI_API_KEY` and `FINANCIAL_DATASETS_API_KEY`; they do
+not require `DISCORD_TOKEN`. Yahoo market data is keyless.
+
+Choose one source, or explicitly opt in to the combined full universe:
+
+```bash
+python -m stockbot.cli daily --universe sp500  # default
+python -m stockbot.cli daily --universe sp600
+python -m stockbot.cli daily --universe tsx
+python -m stockbot.cli daily --universe full   # S&P 500 + S&P 600 + TSX
+```
+
+The daily cap defaults to 300 after the requested source is selected. Use a
+different non-negative cap when needed, or explicitly opt into scanning the
+entire selected source with `0` (a cap at least as large as the source also
+selects all symbols):
+
+```bash
+python -m stockbot.cli daily --max-symbols 300  # rotating daily default
+python -m stockbot.cli daily --max-symbols 0    # full selected source
+```
+
+Choose a report directory or an exact automation path:
+
+```bash
+python -m stockbot.cli daily --output-dir /srv/stockbot/reports
+python -m stockbot.cli daily --output-file /srv/stockbot/latest.md
+python -m stockbot.cli daily --timeout 900
+```
+
+Tune the core screening preferences when needed:
+
+```bash
+python -m stockbot.cli daily \
+  --min-price 5 \
+  --max-price 100 \
+  --min-volume 500000 \
+  --max-pe 25 \
+  --min-market-cap 300000000 \
+  --min-current-ratio 1.5 \
+  --max-debt-equity 2 \
+  --max-decline-from-high 0.4
+```
+
+`--max-decline-from-high` is a fraction from `0` to `1`. Invalid arguments are
+rejected before any API or model work. `--output-dir` and `--output-file` are
+mutually exclusive. `--timeout` is a finite, positive overall flow deadline in
+seconds and defaults to 900 (15 minutes). A timeout produces no report or
+success marker. Timestamped default names are atomically reserved, with suffix
+retries, so concurrent publishers cannot overwrite one another. An exact
+`--output-file` path is intentionally replaced only after the complete report
+is ready.
+
+On success, the command exits `0` and its final stdout line has this stable,
+machine-readable form:
+
+```text
+STOCKBOT_RESULT_JSON={"generated_at":"2026-08-31T12:34:56Z","max_symbols":300,"report_bytes":12345,"report_path":"/absolute/path/reports/daily_undervalued_20260831T123456Z.md","run_type":"daily_undervalued","selected_universe_size":300,"selection_date":"2026-08-31","source_universe_size":503,"status":"ok","universe":"sp500","universe_size":300}
+```
+
+Failures write a concise error to stderr and never emit the success marker. Exit
+codes are `1` for runtime/report failures, `2` for invalid CLI arguments, `3` for
+missing required configuration, and `4` when another daily run holds the
+nonblocking lock at `<application-root>/state/daily_analysis.lock`. The default
+state directory is anchored to the repository/application root, independent of
+the caller's working directory. Report targets inside this protected state
+directory are rejected. The lock is held through flow execution and durable
+report publication, then released on success, timeout, or failure.
+
+A cron-friendly example that runs daily at 7:00 AM in the host timezone and
+appends diagnostics to a user-writable log is:
+
+```cron
+0 7 * * * cd /path/to/stock_analysis_bot && mkdir -p "$HOME/.local/state/stockbot" && timeout --signal=TERM --kill-after=30s 16m /path/to/stock_analysis_bot/venv/bin/python -m stockbot.cli daily --universe sp500 --output-dir "$HOME/stockbot-reports" >> "$HOME/.local/state/stockbot/daily.log" 2>&1
+```
+
+The CLI's default 15-minute process supervisor is the canonical production
+deadline. GNU `timeout` above is an external OS watchdog set one minute longer,
+with a 30-second kill fallback, as defense in depth against failures outside
+the Python supervisor. It does not change the requested once-daily 7:00 AM
+schedule.
 
 Discord bot:
 
@@ -178,8 +279,9 @@ The undervalued flow rejects candidates before persistence when required values 
 - Slash command times out → check the latest file in `logs/`. Every run writes `logs/{HHMMSS_YYYYMMDD}.log`.
 - Empty Canadian market data → confirm the Yahoo suffix (`.TO`, `.V`, `.CN`, `.NE`); `_resolve_yf_symbol` in `undervalued.py` scores candidates against live history.
 - `/undervalued` saves zero candidates → inspect the funnel `stats` block in the final report; check whether `stage_2_gate_survivors` is the bottleneck (gates too tight) or `stage_5_shortlist_size` is empty (no candidates pass DCF + insider weighting).
-- Funnel returns only 1-2 picks unexpectedly → the 24-hour cache in `state/numeric_screen_cache.json` may be stale from an earlier small-universe smoke run. Delete it to force a fresh full-universe scan.
-- Many yfinance fetches failing (high `stage_2_fetched_failed` count) → yfinance's unofficial rate-limiter throttling the 10 concurrent workers. Lower `workers=` on `QuantFunnel(...)` or add backoff.
+- Funnel returns only 1-2 picks unexpectedly → inspect `stage_2_fetched_failed` and the numeric-cache quality counts. Cache schema v3 binds entries to the complete exchange-qualified universe and records `success_count` / `failure_count`; older caches are refreshed automatically.
+- Many yfinance fetches failing with HTTP 429 or `Invalid Crumb` → the numeric scan starts with 5 workers, then retries only failed tickers in two bounded passes (2 workers, after 2s and 5s). A final failure fraction above 20% raises a `RuntimeError`; that run is never cached or turned into a partial daily report. Wait for Yahoo throttling to clear before rerunning. The CLI exits `1` without `STOCKBOT_RESULT_JSON` on this quality failure.
+- Deep-dive response reports contradictory reviewed/accepted counts → these fields are redundant metadata and are normalized after strict stock-object and exact ticker-coverage validation; they do not abort an otherwise valid run.
 - Web search fails → either configure `TAVILY_API_KEY` / `EXA_API_KEY` or confirm `ddgs` is installed.
 - `state/undervalued_state.json` exists after a crash → carries the last phase the previous run reached. Safe to delete after diagnosing.
 - Library row in the watchlist UI shows `—` → legacy `screening` rows had unreliable regex extraction; the UI lazy-loads live quotes (saffron-colored cells). No backfill needed.

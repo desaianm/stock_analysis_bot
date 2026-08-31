@@ -1,4 +1,5 @@
 import json
+import asyncio
 
 import pytest
 
@@ -26,13 +27,43 @@ def test_fenced_deep_dive_json_is_validated():
     assert parsed["stocks"][0]["ticker"] == "SHOP.TO"
 
 
-def test_contradictory_accepted_count_fails_explicitly():
-    stocks = [_stock(f"S{i}") for i in range(7)]
-    payload = {"shortlist_review": {"reviewed_at": "2026-08-31T12:00:00Z", "candidates_reviewed": 7,
-                                    "candidates_accepted": 6}, "stocks": stocks}
+def test_contradictory_counts_are_derived_from_validated_stocks():
+    stocks = [_stock("KEEP"), _stock("DROP", verdict="reject")]
+    stocks[1]["position_size_pct"] = 0.0
+    payload = {"shortlist_review": {"reviewed_at": "2026-08-31T12:00:00Z", "candidates_reviewed": 99,
+                                    "candidates_accepted": 98}, "stocks": stocks}
 
-    with pytest.raises(ValueError, match="candidates_accepted"):
-        UndervaluedAnalysisFlow.__new__(UndervaluedAnalysisFlow)._parse_deep_dive_json(json.dumps(payload), [f"S{i}" for i in range(7)])
+    parsed = UndervaluedAnalysisFlow.__new__(UndervaluedAnalysisFlow)._parse_deep_dive_json(
+        json.dumps(payload), ["KEEP", "DROP"]
+    )
+
+    assert parsed["shortlist_review"]["candidates_reviewed"] == 2
+    assert parsed["shortlist_review"]["candidates_accepted"] == 1
+
+
+def test_incorrect_zero_counts_are_derived_from_validated_stocks():
+    stocks = [_stock("ONE"), _stock("TWO")]
+    payload = {"shortlist_review": {"reviewed_at": "2026-08-31T12:00:00Z", "candidates_reviewed": 0,
+                                    "candidates_accepted": 0}, "stocks": stocks}
+
+    parsed = UndervaluedAnalysisFlow.__new__(UndervaluedAnalysisFlow)._parse_deep_dive_json(
+        json.dumps(payload), ["ONE", "TWO"]
+    )
+
+    assert parsed["shortlist_review"]["candidates_reviewed"] == 2
+    assert parsed["shortlist_review"]["candidates_accepted"] == 2
+
+
+def test_count_normalization_does_not_allow_malformed_stock_objects():
+    stock = _stock("BROKEN")
+    del stock["thesis"]
+    payload = {"shortlist_review": {"reviewed_at": "2026-08-31T12:00:00Z", "candidates_reviewed": 0,
+                                    "candidates_accepted": 0}, "stocks": [stock]}
+
+    with pytest.raises(ValueError, match="thesis"):
+        UndervaluedAnalysisFlow.__new__(UndervaluedAnalysisFlow)._parse_deep_dive_json(
+            json.dumps(payload), ["BROKEN"]
+        )
 
 
 def test_rejected_stock_requires_zero_position_size():
@@ -83,3 +114,69 @@ def test_deep_dive_requires_one_verdict_per_expected_candidate(expected, actual,
         UndervaluedAnalysisFlow.__new__(UndervaluedAnalysisFlow)._parse_deep_dive_json(
             json.dumps(payload), expected
         )
+
+
+@pytest.mark.parametrize("deep_dive", [None, {}])
+def test_nonempty_shortlist_requires_parseable_deep_dive(deep_dive):
+    with pytest.raises(RuntimeError, match="empty or unparseable"):
+        UndervaluedAnalysisFlow._require_deep_dive(deep_dive, [object()])
+
+
+def test_cancelled_run_is_persisted_failed_before_reraise(monkeypatch):
+    completed = []
+    audit = []
+    flow = UndervaluedAnalysisFlow.__new__(UndervaluedAnalysisFlow)
+    flow.current_run_id = 42
+    flow.db = type("DB", (), {
+        "complete_analysis_run": lambda _self, **kwargs: completed.append(kwargs)
+    })()
+    monkeypatch.setattr(
+        "stockbot.flows.undervalued.write_state",
+        lambda name, **kwargs: audit.append((name, kwargs)),
+    )
+
+    cancellation = asyncio.CancelledError("cancelled")
+    flow._persist_failed_run(cancellation, phase="cancelled")
+
+    assert completed == [{"run_id": 42, "status": "failed"}]
+    assert audit == [("undervalued", {
+        "run_id": 42, "phase": "cancelled", "error": "cancelled"
+    })]
+
+
+def test_execute_explicitly_persists_cancelled_run_before_reraising(monkeypatch):
+    completed = []
+    audit = []
+    flow = UndervaluedAnalysisFlow.__new__(UndervaluedAnalysisFlow)
+    flow.current_run_id = None
+    flow.preferences = type("Preferences", (), {
+        "__dict__": {}, "model_dump": lambda _self: {}
+    })()
+    flow.db = type("DB", (), {
+        "create_analysis_run": lambda _self, **_kwargs: 42,
+        "complete_analysis_run": lambda _self, **kwargs: completed.append(kwargs),
+    })()
+    flow._configure_agno_debug_logging = lambda: "test.log"
+    flow._run_startup_ritual = lambda: None
+    flow._preferences_to_gates = lambda: object()
+
+    class CancellingFunnel:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run(self):
+            raise asyncio.CancelledError("worker terminated")
+
+    monkeypatch.setattr("stockbot.flows.undervalued.QuantFunnel", CancellingFunnel)
+    monkeypatch.setattr(
+        "stockbot.flows.undervalued.write_state",
+        lambda name, **kwargs: audit.append((name, kwargs)),
+    )
+
+    with pytest.raises(asyncio.CancelledError, match="worker terminated"):
+        asyncio.run(flow.execute_undervalued_analysis())
+
+    assert completed == [{"run_id": 42, "status": "failed"}]
+    assert audit[-1] == ("undervalued", {
+        "run_id": 42, "phase": "cancelled", "error": "worker terminated"
+    })

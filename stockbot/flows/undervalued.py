@@ -29,6 +29,7 @@ from stockbot.database.manager import StockDatabaseManager
 from stockbot.database.performance_manager import PerformanceTrackingManager
 from stockbot.screening.funnel import FunnelCandidate, QuantFunnel
 from stockbot.screening.numeric_screen import ScreeningGates
+from stockbot.screening.universe import Ticker
 from stockbot.tickers import normalize_ticker
 from stockbot.tools.data import (
     ChartingTool,
@@ -140,15 +141,6 @@ class DeepDiveOutput(BaseModel):
 
     shortlist_review: DeepDiveReview
     stocks: List[DeepDiveStock]
-
-    @model_validator(mode="after")
-    def validate_counts(self) -> "DeepDiveOutput":
-        if self.shortlist_review.candidates_reviewed != len(self.stocks):
-            raise ValueError("candidates_reviewed must equal the stocks list length")
-        accepted = sum(stock.verdict == "accept" for stock in self.stocks)
-        if self.shortlist_review.candidates_accepted != accepted:
-            raise ValueError("candidates_accepted must equal accepted verdict count")
-        return self
 
 
 class UndervaluedAnalysisFlow:
@@ -1786,7 +1778,34 @@ Report:
             raise ValueError("expected shortlist contains duplicate tickers")
         for stock, ticker in zip(validated["stocks"], actual):
             stock["ticker"] = ticker
+        validated["shortlist_review"]["candidates_reviewed"] = len(
+            validated["stocks"]
+        )
+        validated["shortlist_review"]["candidates_accepted"] = sum(
+            stock["verdict"] == "accept" for stock in validated["stocks"]
+        )
         return validated
+
+    @staticmethod
+    def _require_deep_dive(
+        deep_dive: Optional[Dict[str, Any]], shortlist: List[FunnelCandidate]
+    ) -> None:
+        if shortlist and not deep_dive:
+            raise RuntimeError(
+                "deep-dive analysis returned empty or unparseable output for a nonempty shortlist"
+            )
+
+    def _persist_failed_run(self, error: BaseException, phase: str = "failed") -> None:
+        if self.current_run_id:
+            self.db.complete_analysis_run(
+                run_id=self.current_run_id, status="failed"
+            )
+        write_state(
+            "undervalued",
+            run_id=self.current_run_id,
+            phase=phase,
+            error=str(error),
+        )
 
     async def _save_funnel_stocks(
         self,
@@ -1909,7 +1928,9 @@ Report:
 
         return "\n".join(lines)
 
-    async def execute_undervalued_analysis(self) -> str:
+    async def execute_undervalued_analysis(
+        self, universe: Optional[List[Ticker]] = None
+    ) -> str:
         """Funnel-first flow: deterministic stages 1-5 then LLM thesis-writing on shortlist."""
         log_file_path = self._configure_agno_debug_logging()
         print(f"Agno debug logs: {log_file_path}")
@@ -1937,7 +1958,8 @@ Report:
                 top_n_for_dcf=30,
                 top_n_for_insider=20,
                 top_n_final=10,
-                workers=10,
+                workers=5,
+                universe=universe,
             )
             result = funnel.run()
             shortlist: List[FunnelCandidate] = result["candidates"]
@@ -1969,12 +1991,12 @@ Report:
                     raw_text, [candidate.symbol for candidate in shortlist]
                 )
                 if deep_dive_dict is None:
-                    print("  WARN: deep-dive JSON parse failed; raw output saved")
                     await self.save_phase_output(
                         "deep_dive_raw",
                         raw_text,
                         "Raw deep-dive output (JSON parse failed)",
                     )
+                    self._require_deep_dive(deep_dive_dict, shortlist)
                 else:
                     await self.save_phase_output(
                         "deep_dive",
@@ -2021,17 +2043,11 @@ Report:
             clear_state("undervalued")
             return final_report
 
+        except asyncio.CancelledError as exc:
+            self._persist_failed_run(exc, phase="cancelled")
+            raise
         except Exception as exc:
-            if self.current_run_id:
-                self.db.complete_analysis_run(
-                    run_id=self.current_run_id, status="failed"
-                )
-            write_state(
-                "undervalued",
-                run_id=self.current_run_id,
-                phase="failed",
-                error=str(exc),
-            )
+            self._persist_failed_run(exc)
             raise
 
     def _extract_content(self, response: Any) -> str:

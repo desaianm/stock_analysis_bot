@@ -12,7 +12,9 @@ rebuilt automatically when stale; call ``rebuild_universe()`` to force.
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +24,7 @@ import requests
 
 CACHE_PATH = Path(__file__).resolve().parent.parent.parent / "state" / "universe_cache.json"
 CACHE_TTL_SECONDS = 24 * 3600
+SOURCE_MINIMUM_COUNTS = {"sp500": 450, "sp600": 500, "tsx_composite": 150}
 
 _HEADERS = {"User-Agent": "stockbot-universe-loader/1.0"}
 
@@ -122,17 +125,47 @@ def _cache_is_fresh() -> bool:
 
 def _read_cache() -> List[Ticker]:
     payload = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-    return [Ticker(**t) for t in payload["tickers"]]
+    tickers = [Ticker(**t) for t in payload["tickers"]]
+    if payload.get("count") != len(tickers):
+        raise ValueError("universe cache count mismatch")
+    _validate_universe(tickers)
+    return tickers
+
+
+def _validate_universe(tickers: List[Ticker]) -> None:
+    counts = universe_breakdown(tickers)
+    for source, minimum in SOURCE_MINIMUM_COUNTS.items():
+        actual = counts.get(source, 0)
+        if actual < minimum:
+            raise ValueError(
+                f"universe source {source} has {actual} constituents; minimum is {minimum}"
+            )
 
 
 def _write_cache(tickers: List[Ticker]) -> None:
+    _validate_universe(tickers)
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "generated_at": time.time(),
         "count": len(tickers),
         "tickers": [t.__dict__ for t in tickers],
     }
-    CACHE_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    contents = json.dumps(payload, indent=2)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=CACHE_PATH.parent, prefix=f".{CACHE_PATH.name}."
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary:
+            temporary.write(contents)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_name, CACHE_PATH)
+    except BaseException:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def rebuild_universe() -> List[Ticker]:
@@ -141,14 +174,19 @@ def rebuild_universe() -> List[Ticker]:
     all_tickers: List[Ticker] = []
     seen: set[str] = set()
     for loader in sources:
-        try:
-            for t in loader():
-                if t.symbol in seen:
-                    continue
-                seen.add(t.symbol)
-                all_tickers.append(t)
-        except Exception as exc:  # noqa: BLE001
-            print(f"  Universe loader {loader.__name__} failed: {exc}")
+        loaded = loader()
+        expected_source = loaded[0].source if loaded else loader.__name__.removeprefix("_load_")
+        minimum = SOURCE_MINIMUM_COUNTS.get(expected_source)
+        if minimum is None or len(loaded) < minimum:
+            raise RuntimeError(
+                f"universe source {expected_source} returned {len(loaded)}; minimum is {minimum}"
+            )
+        for t in loaded:
+            if t.symbol in seen:
+                continue
+            seen.add(t.symbol)
+            all_tickers.append(t)
+    _validate_universe(all_tickers)
     _write_cache(all_tickers)
     return all_tickers
 
@@ -160,7 +198,15 @@ def load_universe(force_refresh: bool = False) -> List[Ticker]:
             return _read_cache()
         except Exception:
             pass
-    return rebuild_universe()
+    try:
+        return rebuild_universe()
+    except Exception:
+        if CACHE_PATH.exists():
+            try:
+                return _read_cache()
+            except Exception:
+                pass
+        raise
 
 
 def universe_breakdown(tickers: List[Ticker]) -> Dict[str, int]:
