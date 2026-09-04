@@ -91,6 +91,78 @@ def test_position_size_must_match_verdict(verdict, position_size):
         UndervaluedAnalysisFlow.__new__(UndervaluedAnalysisFlow)._parse_deep_dive_json(json.dumps(payload), ["RULE"])
 
 
+def test_identical_duplicate_deep_dive_stock_is_collapsed():
+    stock = _stock("VLTO")
+    payload = {
+        "shortlist_review": {
+            "reviewed_at": "2026-09-03T10:01:58-04:00",
+            "candidates_reviewed": 2,
+            "candidates_accepted": 2,
+        },
+        "stocks": [stock, dict(stock)],
+    }
+
+    parsed = UndervaluedAnalysisFlow.__new__(UndervaluedAnalysisFlow)._parse_deep_dive_json(
+        json.dumps(payload), ["VLTO"]
+    )
+
+    assert [row["ticker"] for row in parsed["stocks"]] == ["VLTO"]
+    assert parsed["shortlist_review"]["candidates_reviewed"] == 1
+    assert parsed["shortlist_review"]["candidates_accepted"] == 1
+
+
+def test_invalid_duplicate_placeholder_is_discarded_before_validation():
+    valid = _stock("CTSH")
+    placeholder = {
+        **_stock("CTSH", verdict="reject"),
+        "confidence_score": 0,
+        "thesis": "",
+        "key_risks": [],
+        "primary_catalyst": "",
+        "entry_strategy": "",
+        "stop_loss_pct": 0,
+        "position_size_pct": 0,
+        "rejection_reason": (
+            "Accepted in the narrative review; duplicate placeholder removed "
+            "from final shortlist."
+        ),
+    }
+    payload = {
+        "shortlist_review": {
+            "reviewed_at": "2026-09-04T10:02:26-04:00",
+            "candidates_reviewed": 2,
+            "candidates_accepted": 1,
+        },
+        "stocks": [valid, placeholder],
+    }
+
+    parsed = UndervaluedAnalysisFlow.__new__(UndervaluedAnalysisFlow)._parse_deep_dive_json(
+        json.dumps(payload), ["CTSH"]
+    )
+
+    assert parsed["stocks"] == [{**valid, "rejection_reason": None}]
+    assert parsed["shortlist_review"]["candidates_reviewed"] == 1
+    assert parsed["shortlist_review"]["candidates_accepted"] == 1
+
+
+def test_invalid_sole_stock_still_fails_validation():
+    stock = _stock("BROKEN")
+    stock["thesis"] = ""
+    payload = {
+        "shortlist_review": {
+            "reviewed_at": "2026-09-04T10:02:26-04:00",
+            "candidates_reviewed": 1,
+            "candidates_accepted": 1,
+        },
+        "stocks": [stock],
+    }
+
+    with pytest.raises(ValueError, match="thesis"):
+        UndervaluedAnalysisFlow.__new__(UndervaluedAnalysisFlow)._parse_deep_dive_json(
+            json.dumps(payload), ["BROKEN"]
+        )
+
+
 @pytest.mark.parametrize(
     ("expected", "actual", "message"),
     [
