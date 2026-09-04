@@ -69,6 +69,7 @@ def test_funnel_merges_researched_bottleneck_with_value_candidates(monkeypatch):
         "theme": "Grid component shortage",
         "role": "capacity owner",
         "confidence_score": 8.0,
+        "earnings_transmission": "Backlog raises utilization and pricing.",
         "evidence": ["Lead times doubled", "Backlog rose"],
         "source_urls": ["https://one.example", "https://two.example"],
         "already_repriced_risk": "Multiple expansion",

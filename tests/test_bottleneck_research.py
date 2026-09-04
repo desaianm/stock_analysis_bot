@@ -15,6 +15,8 @@ def _payload():
                 "name": "Transformer capacity",
                 "constrained_input": "large power transformers",
                 "demand_driver": "grid and data-center construction",
+                "change_signal": "Lead times worsened during the latest quarter.",
+                "supply_response_lag": "New plants take several years.",
                 "time_horizon_months": 18,
                 "evidence": ["Lead times doubled", "Prices rose 75%"],
                 "source_urls": [
@@ -30,6 +32,7 @@ def _payload():
                 "theme": "Transformer capacity",
                 "role": "equipment supplier",
                 "confidence_score": 8.2,
+                "earnings_transmission": "Backlog supports price and utilization.",
                 "evidence": ["Backlog expanded", "New capacity takes years"],
                 "source_urls": [
                     "https://grid.example/filing",

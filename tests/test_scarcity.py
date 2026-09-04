@@ -32,6 +32,7 @@ def _research(**overrides):
         "theme": "Emerging constraint",
         "role": "capacity owner",
         "confidence_score": 8.0,
+        "earnings_transmission": "Higher utilization and price expand margins.",
         "evidence": ["Lead times doubled", "Capacity is sold out"],
         "source_urls": ["https://one.example", "https://two.example"],
         "already_repriced_risk": "The stock has rerated.",

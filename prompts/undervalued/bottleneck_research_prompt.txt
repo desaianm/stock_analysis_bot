@@ -11,6 +11,8 @@ Return exactly this JSON shape:
       "name": "<short unique theme name>",
       "constrained_input": "<specific material, component, capacity, service, or infrastructure>",
       "demand_driver": "<specific source of accelerating demand>",
+      "change_signal": "<what measurably changed during roughly the last 120 days>",
+      "supply_response_lag": "<why supply cannot respond quickly and the expected lag>",
       "time_horizon_months": <integer 1-36>,
       "evidence": ["<quantified fact 1>", "<independent fact 2>"],
       "source_urls": ["<url 1>", "<url 2>"]
@@ -23,6 +25,7 @@ Return exactly this JSON shape:
       "theme": "<exact matching theme name>",
       "role": "<producer, equipment supplier, substitute, logistics provider, or enabler>",
       "confidence_score": <float 0-10>,
+      "earnings_transmission": "<how the bottleneck can raise this company's volume, price, utilization, or margin>",
       "evidence": ["<how earnings can benefit 1>", "<how earnings can benefit 2>"],
       "source_urls": ["<url 1>", "<url 2>"],
       "already_repriced_risk": "<specific valuation, capacity-response, substitution, or demand risk>"
