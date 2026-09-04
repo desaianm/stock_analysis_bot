@@ -1763,21 +1763,86 @@ Report:
                     return None
             else:
                 return None
-        validated = DeepDiveOutput.model_validate(payload).model_dump(mode="json")
         expected = [normalize_ticker(ticker) for ticker in expected_tickers]
-        actual = [normalize_ticker(stock["ticker"]) for stock in validated["stocks"]]
-        if len(actual) != len(set(actual)):
-            raise ValueError("deep-dive output contains duplicate tickers")
+        if len(expected) != len(set(expected)):
+            raise ValueError("expected shortlist contains duplicate tickers")
+
+        # Models occasionally emit a second, malformed placeholder for a ticker
+        # they already reviewed. Remove such rows before validating the complete
+        # response; otherwise one invalid duplicate prevents the valid verdict
+        # from reaching the deduplication below. A malformed sole verdict is
+        # deliberately left in place so normal schema validation still rejects it.
+        if isinstance(payload, dict) and isinstance(payload.get("stocks"), list):
+            grouped_stocks: Dict[str, List[Any]] = {}
+            stock_order: List[str] = []
+            passthrough_stocks: List[Any] = []
+            for raw_stock in payload["stocks"]:
+                if not isinstance(raw_stock, dict):
+                    passthrough_stocks.append(raw_stock)
+                    continue
+                try:
+                    ticker = normalize_ticker(raw_stock.get("ticker"))
+                except ValueError:
+                    passthrough_stocks.append(raw_stock)
+                    continue
+                if ticker not in grouped_stocks:
+                    grouped_stocks[ticker] = []
+                    stock_order.append(ticker)
+                grouped_stocks[ticker].append(raw_stock)
+
+            cleaned_stocks: List[Any] = []
+            for ticker in stock_order:
+                rows = grouped_stocks[ticker]
+                if len(rows) == 1:
+                    cleaned_stocks.append(rows[0])
+                    continue
+
+                valid_rows: List[Dict[str, Any]] = []
+                for row in rows:
+                    try:
+                        valid_row = DeepDiveStock.model_validate(row).model_dump(
+                            mode="json"
+                        )
+                    except ValueError:
+                        continue
+                    valid_row["ticker"] = ticker
+                    valid_rows.append(valid_row)
+
+                if not valid_rows:
+                    cleaned_stocks.extend(rows)
+                    continue
+                if any(row != valid_rows[0] for row in valid_rows[1:]):
+                    raise ValueError(
+                        f"deep-dive output contains conflicting duplicate ticker: {ticker}"
+                    )
+                cleaned_stocks.append(valid_rows[0])
+
+            payload = {**payload, "stocks": cleaned_stocks + passthrough_stocks}
+
+        validated = DeepDiveOutput.model_validate(payload).model_dump(mode="json")
+
+        unique_stocks: List[Dict[str, Any]] = []
+        stocks_by_ticker: Dict[str, Dict[str, Any]] = {}
+        for stock in validated["stocks"]:
+            ticker = normalize_ticker(stock["ticker"])
+            stock["ticker"] = ticker
+            previous = stocks_by_ticker.get(ticker)
+            if previous is None:
+                stocks_by_ticker[ticker] = stock
+                unique_stocks.append(stock)
+            elif stock != previous:
+                raise ValueError(
+                    f"deep-dive output contains conflicting duplicate ticker: {ticker}"
+                )
+
+        validated["stocks"] = unique_stocks
+        actual = [stock["ticker"] for stock in unique_stocks]
         unexpected = sorted(set(actual) - set(expected))
         if unexpected:
             raise ValueError(f"deep-dive output contains unexpected tickers: {unexpected}")
         omitted = sorted(set(expected) - set(actual))
         if omitted:
             raise ValueError(f"deep-dive output omitted expected tickers: {omitted}")
-        if len(expected) != len(set(expected)):
-            raise ValueError("expected shortlist contains duplicate tickers")
-        for stock, ticker in zip(validated["stocks"], actual):
-            stock["ticker"] = ticker
         validated["shortlist_review"]["candidates_reviewed"] = len(
             validated["stocks"]
         )
