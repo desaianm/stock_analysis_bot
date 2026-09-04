@@ -11,4 +11,7 @@ The quant funnel has produced a ranked shortlist of {candidate_count} candidates
 ## Reddit catalyst overlay (use as supporting evidence only — do not let it drive the verdict)
 {reddit_overlay}
 
+## Institutional portfolio context (delayed supporting evidence only)
+{institutional_context}
+
 Respond with ONLY the JSON object. No markdown. No commentary. Start with `{{` and end with `}}`.

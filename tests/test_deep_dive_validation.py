@@ -231,6 +231,12 @@ def test_execute_explicitly_persists_cancelled_run_before_reraising(monkeypatch)
     flow._configure_agno_debug_logging = lambda: "test.log"
     flow._run_startup_ritual = lambda: None
     flow._preferences_to_gates = lambda: object()
+    monkeypatch.setattr(
+        "stockbot.flows.undervalued.fetch_situational_awareness_portfolio",
+        lambda: type(
+            "Portfolio", (), {"error": None, "holdings": [], "report_date": None}
+        )(),
+    )
 
     class CancellingFunnel:
         def __init__(self, **_kwargs):

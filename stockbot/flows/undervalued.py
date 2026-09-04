@@ -42,6 +42,10 @@ from stockbot.tools.data import (
     TavilySearchTool,
     WebSearchTool,
 )
+from stockbot.tools.institutional import (
+    InstitutionalPortfolio,
+    fetch_situational_awareness_portfolio,
+)
 from stockbot.tools.reddit import RedditClient
 
 ny_timezone = pytz.timezone("America/New_York")
@@ -1726,6 +1730,7 @@ Report:
         candidates: List[FunnelCandidate],
         stats: Dict[str, Any],
         reddit_overlay: str,
+        institutional_context: str,
     ) -> str:
         now = datetime.now(ny_timezone).strftime("%Y-%m-%d %H:%M:%S")
         summaries = [c.to_prompt_summary() for c in candidates]
@@ -1736,6 +1741,43 @@ Report:
             funnel_stats=json.dumps(stats, indent=2, default=str),
             candidates_json=json.dumps(summaries, indent=2, default=str),
             reddit_overlay=reddit_overlay,
+            institutional_context=institutional_context,
+        )
+
+    @staticmethod
+    def _format_institutional_context(
+        portfolio: InstitutionalPortfolio,
+        candidates: List[FunnelCandidate],
+    ) -> str:
+        """Describe candidate matches without presenting a delayed 13F as advice."""
+        if portfolio.error:
+            return f"Portfolio overlay unavailable: {portfolio.error}"
+        matched = []
+        for candidate in candidates:
+            positions = portfolio.positions_for(candidate.snapshot.company_name)
+            if not positions:
+                continue
+            matched.append(
+                {
+                    "ticker": candidate.symbol,
+                    "company_name": candidate.snapshot.company_name,
+                    "positions": positions,
+                }
+            )
+        return json.dumps(
+            {
+                "manager": portfolio.manager,
+                "source": "SEC Form 13F-HR",
+                "report_date": portfolio.report_date,
+                "filing_date": portfolio.filing_date,
+                "candidate_matches": matched,
+                "limitations": (
+                    "Delayed public snapshot; option rows are not proof of current "
+                    "directional exposure; never use as a standalone verdict."
+                ),
+            },
+            indent=2,
+            default=str,
         )
 
     def _parse_deep_dive_json(
@@ -1929,6 +1971,7 @@ Report:
         candidates: List[FunnelCandidate],
         deep_dive: Optional[Dict[str, Any]],
         reddit_overlay: str,
+        institutional_context: str,
     ) -> str:
         """Compose the final markdown report from funnel stats + deep-dive verdicts."""
         timestamp = datetime.now(ny_timezone).strftime("%Y-%m-%d %H:%M:%S")
@@ -1959,16 +2002,26 @@ Report:
             pe = s.trailing_pe or s.forward_pe
             implied = c.dcf.by_discount_rate if c.dcf and not c.dcf.error else {}
             insider_net = c.insider.net_value_usd if c.insider and not c.insider.error else None
+            lanes = ", ".join(c.discovery_lanes) or "unclassified"
+            scarcity = c.scarcity.score if c.scarcity else 0.0
             lines.append(
                 f"- **{s.symbol}** ({s.sector or 'Unknown'}) · price ${s.price:.2f} · "
                 f"mcap ${(s.market_cap or 0)/1e9:.1f}B · P/E {pe:.1f} · "
                 f"sector value {c.ranking.composite_value_score} · "
                 f"implied growth @10% {implied.get('10%', 'n/a')} · "
                 f"insider net 180d {('$%s' % f'{insider_net:,.0f}') if insider_net is not None else 'n/a'} · "
+                f"lanes {lanes} · scarcity {scarcity:.2f} · "
                 f"funnel score {c.composite_funnel_score}"
             )
 
-        lines += ["", "## Reddit Catalyst Overlay (supporting evidence only)", reddit_overlay]
+        lines += [
+            "",
+            "## Institutional Portfolio Context (supporting evidence only)",
+            institutional_context,
+            "",
+            "## Reddit Catalyst Overlay (supporting evidence only)",
+            reddit_overlay,
+        ]
 
         if deep_dive and deep_dive.get("stocks"):
             lines += ["", "## Deep-Dive Verdicts"]
@@ -2016,6 +2069,16 @@ Report:
         )
 
         try:
+            print("\nFetching SEC institutional portfolio context...")
+            portfolio = fetch_situational_awareness_portfolio()
+            if portfolio.error:
+                print(f"  Institutional overlay unavailable: {portfolio.error}")
+            else:
+                print(
+                    f"  Loaded {len(portfolio.holdings)} positions from "
+                    f"the {portfolio.report_date} Situational Awareness 13F."
+                )
+
             # Stages 1-5: deterministic quant funnel
             print("\n=== Stages 1-5: Quant Funnel (deterministic) ===")
             funnel = QuantFunnel(
@@ -2025,10 +2088,15 @@ Report:
                 top_n_final=10,
                 workers=5,
                 universe=universe,
+                institutional_portfolio=portfolio,
             )
             result = funnel.run()
             shortlist: List[FunnelCandidate] = result["candidates"]
             stats: Dict[str, Any] = result["stats"]
+            stats["institutional_overlay_status"] = (
+                "unavailable" if portfolio.error else "loaded"
+            )
+            stats["institutional_portfolio_report_date"] = portfolio.report_date
             funnel_map = {c.symbol: c for c in shortlist}
 
             print(f"\nFunnel produced {len(shortlist)} candidates.")
@@ -2043,12 +2111,17 @@ Report:
             # Lightweight Reddit overlay on the shortlist only
             print("\nFetching Reddit catalyst overlay for shortlist...")
             reddit_overlay = self._get_reddit_overlay(shortlist)
+            institutional_context = self._format_institutional_context(
+                portfolio, shortlist
+            )
 
             # Stage 6: Agent deep-dive with structured JSON output
             print("\n=== Stage 6: Agent Deep-Dive (LLM narrative) ===")
             deep_dive_dict: Optional[Dict[str, Any]] = None
             if shortlist:
-                prompt = self._build_funnel_deep_dive_prompt(shortlist, stats, reddit_overlay)
+                prompt = self._build_funnel_deep_dive_prompt(
+                    shortlist, stats, reddit_overlay, institutional_context
+                )
                 self._log_prompt_size("Deep-dive prompt", prompt)
                 response = await self.deep_dive_agent.arun(prompt)
                 raw_text = self._extract_content(response)
@@ -2078,7 +2151,11 @@ Report:
 
             # Compose + save final report
             final_report = self._format_funnel_report(
-                stats, shortlist, deep_dive_dict, reddit_overlay
+                stats,
+                shortlist,
+                deep_dive_dict,
+                reddit_overlay,
+                institutional_context,
             )
             await self.save_phase_output(
                 "final_report",
