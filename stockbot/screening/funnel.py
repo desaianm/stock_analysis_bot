@@ -1,10 +1,12 @@
-"""Quant funnel orchestrator: universe → numeric gate → ranking → DCF → insider → top-N.
+"""Dual-lane funnel: value + researched bottlenecks → ranking → DCF → insider.
 
 Run ``QuantFunnel(...).run()`` to get a list of FunnelCandidate objects, each
-annotated with sector-relative ranking, reverse-DCF margin of safety, and
-recent insider activity. Hand this list to the agent for narrative deep-dive.
+annotated with sector-relative ranking, reverse-DCF margin of safety, recent
+insider activity, and any validated scarcity signal. Hand this list to the
+agent for narrative deep-dive.
 
-Reddit is intentionally NOT consulted here — it's added in
+Web research is performed by the owning flow and passed in as structured
+candidate evidence. Reddit is intentionally NOT consulted here — it's added in
 ``stockbot/flows/undervalued.py`` as a Stage-5 catalyst overlay alongside
 analyst targets and recent news.
 """
@@ -21,6 +23,7 @@ from stockbot.screening.numeric_screen import (
     scan_universe,
 )
 from stockbot.screening.ranking import RankedStock, rank_by_sector, sector_medians
+from stockbot.screening.scarcity import ScarcitySignal, score_scarcity_candidate
 from stockbot.screening.universe import Ticker, load_universe
 from stockbot.screening.valuation import (
     ReverseDCFResult,
@@ -44,7 +47,9 @@ class FunnelCandidate:
     ranking: RankedStock
     dcf: Optional[ReverseDCFResult] = None
     insider: Optional[InsiderSummary] = None
-    composite_funnel_score: float = 0.0   # 0-30 (10 each from value, MOS, insider)
+    scarcity: Optional[ScarcitySignal] = None
+    discovery_lanes: List[str] = field(default_factory=list)
+    composite_funnel_score: float = 0.0
     rejection_reasons: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -56,6 +61,8 @@ class FunnelCandidate:
             "ranking": self.ranking.to_dict(),
             "dcf": self.dcf.to_dict() if self.dcf else None,
             "insider": self.insider.to_dict() if self.insider else None,
+            "scarcity": asdict(self.scarcity) if self.scarcity else None,
+            "discovery_lanes": self.discovery_lanes,
             "composite_funnel_score": self.composite_funnel_score,
         }
 
@@ -65,6 +72,7 @@ class FunnelCandidate:
         pe = s.trailing_pe if s.trailing_pe is not None else s.forward_pe
         return {
             "ticker": self.symbol,
+            "company_name": s.company_name,
             "sector": self.sector,
             "industry": self.industry,
             "price": s.price,
@@ -90,6 +98,10 @@ class FunnelCandidate:
             "insider_distinct_buyers": (
                 self.insider.distinct_buyers if self.insider and not self.insider.error else None
             ),
+            "discovery_lanes": self.discovery_lanes,
+            "scarcity_score": self.scarcity.score if self.scarcity else None,
+            "scarcity_reasons": self.scarcity.reasons if self.scarcity else [],
+            "bottleneck_research": self.scarcity.research if self.scarcity else None,
             "composite_funnel_score": self.composite_funnel_score,
         }
 
@@ -101,7 +113,9 @@ class QuantFunnel:
     top_n_for_dcf: int = 30
     top_n_for_insider: int = 20
     top_n_final: int = 10
+    top_n_scarcity: int = 5
     universe: Optional[List[Ticker]] = None
+    bottleneck_research: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     force_refresh: bool = False
     workers: int = 5
 
@@ -119,8 +133,33 @@ class QuantFunnel:
         stage_stats["stage_2_fetched_ok"] = len(ok_snaps)
         stage_stats["stage_2_fetched_failed"] = len(snaps) - len(ok_snaps)
 
-        survivors = apply_gates(ok_snaps, self.gates)
-        stage_stats["stage_2_gate_survivors"] = len(survivors)
+        classic_survivors = apply_gates(ok_snaps, self.gates)
+        stage_stats["stage_2_gate_survivors"] = len(classic_survivors)
+
+        scarcity_signals = [
+            signal
+            for snapshot in ok_snaps
+            if (
+                signal := score_scarcity_candidate(
+                    snapshot,
+                    self.gates,
+                    self.bottleneck_research.get(snapshot.symbol),
+                )
+            )
+        ]
+        scarcity_signals.sort(key=lambda signal: (-signal.score, signal.symbol))
+        selected_scarcity = scarcity_signals[: self.top_n_scarcity]
+        scarcity_by_symbol = {signal.symbol: signal for signal in selected_scarcity}
+        classic_symbols = {snapshot.symbol for snapshot in classic_survivors}
+        scarcity_additions = [
+            snapshot
+            for snapshot in ok_snaps
+            if snapshot.symbol in scarcity_by_symbol
+            and snapshot.symbol not in classic_symbols
+        ]
+        survivors = classic_survivors + scarcity_additions
+        stage_stats["stage_2_scarcity_lane_selected"] = len(selected_scarcity)
+        stage_stats["stage_2_scarcity_candidates_added"] = len(scarcity_additions)
 
         if not survivors:
             return {
@@ -135,7 +174,17 @@ class QuantFunnel:
         stage_stats["stage_3_ranked"] = len(ranked)
 
         # Take top N for DCF (Stage 4) and insider (Stage 5)
-        ranked_for_dcf = ranked[: self.top_n_for_dcf]
+        ranked_by_symbol = {row.snapshot.symbol: row for row in ranked}
+        scarcity_ranked = [
+            ranked_by_symbol[signal.symbol]
+            for signal in selected_scarcity
+            if signal.symbol in ranked_by_symbol
+        ]
+        scarcity_symbols = {row.snapshot.symbol for row in scarcity_ranked}
+        ranked_for_dcf = (
+            scarcity_ranked
+            + [row for row in ranked if row.snapshot.symbol not in scarcity_symbols]
+        )[: self.top_n_for_dcf]
 
         # Stage 4: Reverse-DCF margin of safety
         candidates: List[FunnelCandidate] = []
@@ -154,6 +203,11 @@ class QuantFunnel:
                     snapshot=s,
                     ranking=r,
                     dcf=dcf,
+                    scarcity=scarcity_by_symbol.get(s.symbol),
+                    discovery_lanes=(
+                        (["classic_value"] if s.symbol in classic_symbols else [])
+                        + (["scarcity_capacity"] if s.symbol in scarcity_by_symbol else [])
+                    ),
                 )
             )
 
@@ -161,12 +215,12 @@ class QuantFunnel:
         def _value_plus_mos(c: FunnelCandidate) -> float:
             v = c.ranking.composite_value_score or 0.0
             if not c.dcf or c.dcf.error or not c.snapshot.historical_fcf_growth:
-                return v
+                return v + (c.scarcity.score if c.scarcity else 0.0)
             implied = c.dcf.implied_growth_at(0.10)
             if implied is None:
-                return v
+                return v + (c.scarcity.score if c.scarcity else 0.0)
             mos = margin_of_safety_score(implied, c.snapshot.historical_fcf_growth)
-            return v + mos
+            return v + mos + (c.scarcity.score if c.scarcity else 0.0)
 
         candidates.sort(key=_value_plus_mos, reverse=True)
         for_insider = candidates[: self.top_n_for_insider]
@@ -181,7 +235,7 @@ class QuantFunnel:
             1 for c in for_insider if c.insider and not c.insider.error
         )
 
-        # Composite funnel score: sector value + MOS + insider
+        # Composite funnel score: sector value + MOS + insider + scarcity/capacity
         for c in for_insider:
             value = c.ranking.composite_value_score or 0.0
             mos = 0.0
@@ -190,7 +244,10 @@ class QuantFunnel:
                 if implied is not None:
                     mos = margin_of_safety_score(implied, c.snapshot.historical_fcf_growth)
             insider_score = insider_signal_score(c.insider) if c.insider else 0.0
-            c.composite_funnel_score = round(value + mos + insider_score, 2)
+            scarcity_score = c.scarcity.score if c.scarcity else 0.0
+            c.composite_funnel_score = round(
+                value + mos + insider_score + scarcity_score, 2
+            )
 
         # Final shortlist
         for_insider.sort(key=lambda c: c.composite_funnel_score, reverse=True)

@@ -5,7 +5,7 @@ Discord bot and local research workflows for stock screening, single-company ana
 ## Slash commands
 
 - `/top20` — three-phase portfolio construction: screening → tournament ranking → final allocation.
-- `/undervalued` — **Quant funnel** over S&P 500 + S&P 600 + TSX Composite (~1,325 tickers). Stages: universe → numeric gate → sector-relative ranking → reverse-DCF margin of safety → insider trades (Financial Datasets API) → agent deep-dive with strict JSON output. Reddit is a supporting catalyst signal only — not the discovery driver.
+- `/undervalued` — **Dual-lane research + quant funnel** over S&P 500 + S&P 600 + TSX Composite (~1,325 tickers). A web-research pass first discovers emerging supply-chain bottlenecks anywhere in the economy and maps them to public beneficiaries. Those names join the classic value lane before sector ranking → reverse-DCF → insider trades → a strict-JSON agent deep-dive.
 - `/analyze <company_name>` — resolve company name to ticker, then run the multi-agent single-stock report.
 - `/portfolio` — view tracked-holding performance and learning insights.
 - `/help` — list commands.
@@ -53,6 +53,7 @@ stockbot/screening/                Quant funnel package (used by /undervalued)
     universe.py                    S&P 500 + S&P 600 + TSX Composite loader (Wikipedia, 24h cache)
     numeric_screen.py              Parallel yfinance scan (ThreadPoolExecutor) + hard gates
     ranking.py                     Sector-relative percentile ranking + composite value score
+    scarcity.py                    Financial validation for researched bottlenecks
     valuation.py                   Reverse-DCF implied growth across 8/10/12% discount rates
     funnel.py                      Orchestrator chaining stages 1-5 → top-N shortlist
 stockbot/tools/
@@ -247,13 +248,15 @@ RUN_FLOW_TESTS=1 python test.py                        # also runs all three flo
 ```
 1. Universe        ~1,325 tickers   (S&P 500 + S&P 600 + TSX Composite)
 2. Numeric screen  ~30s             (parallel yfinance, hard gates from preferences)
-3. Ranking         instant          (sector-relative percentiles, composite value score)
+3. Dual discovery  variable         (web-researched bottlenecks + classic value)
 4. Reverse-DCF     instant          (implied growth at 8/10/12% discount rates)
 5. Insider trades  ~20s             (Financial Datasets Form 4, 180-day net buying)
 6. Agent deep-dive ~15s             (gpt-5.4-mini writes JSON thesis on top-10 only)
 ```
 
-Composite ranking = sector value score + reverse-DCF margin-of-safety + insider signal. Reddit is consulted only as a Stage-5 catalyst overlay on the shortlist, never as the discovery driver.
+Before the numeric funnel, a dedicated research agent searches across the whole economy for measurable mismatches between accelerating demand and slow supply response. It must establish the causal chain with multiple independent sources, identify public companies that can capture the economics, and state the risk that each opportunity has already repriced. Its tickers are scanned even when they are outside the selected index window.
+
+Composite ranking = sector value score + reverse-DCF margin-of-safety + insider signal + validated scarcity/capacity score. The research lane can admit a liquid, cash-generating or fast-growing beneficiary that exceeds the classic price/P-E limits; it does not bypass minimum price, volume, or market-cap protections. The deep-dive must re-verify company-specific evidence such as constrained supply, sold-out capacity, pricing, backlog, lead times, customer capex, or margin inflection and reject generic shortage narratives or already-priced-in growth. Web-research failure is nonfatal: the classic value lane still runs.
 
 **Required keys**: `OPENAI_API_KEY`, `FINANCIAL_DATASETS_API_KEY`. Optional fallbacks for web search: `TAVILY_API_KEY`, `EXA_API_KEY`. Polygon's free tier paywalls the bulk endpoints, so we use yfinance for screening and Financial Datasets for insider data.
 

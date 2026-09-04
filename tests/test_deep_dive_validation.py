@@ -232,6 +232,11 @@ def test_execute_explicitly_persists_cancelled_run_before_reraising(monkeypatch)
     flow._run_startup_ritual = lambda: None
     flow._preferences_to_gates = lambda: object()
 
+    async def no_research():
+        return None
+
+    flow._research_bottlenecks = no_research
+
     class CancellingFunnel:
         def __init__(self, **_kwargs):
             pass
@@ -246,7 +251,7 @@ def test_execute_explicitly_persists_cancelled_run_before_reraising(monkeypatch)
     )
 
     with pytest.raises(asyncio.CancelledError, match="worker terminated"):
-        asyncio.run(flow.execute_undervalued_analysis())
+        asyncio.run(flow.execute_undervalued_analysis(universe=[]))
 
     assert completed == [{"run_id": 42, "status": "failed"}]
     assert audit[-1] == ("undervalued", {

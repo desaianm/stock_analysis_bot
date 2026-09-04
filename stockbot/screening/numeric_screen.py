@@ -28,7 +28,7 @@ from stockbot.screening.universe import Ticker, load_universe
 
 CACHE_PATH = Path(__file__).resolve().parent.parent.parent / "state" / "numeric_screen_cache.json"
 CACHE_TTL_SECONDS = 24 * 3600
-CACHE_SCHEMA_VERSION = 3
+CACHE_SCHEMA_VERSION = 4
 MAX_FAILURE_FRACTION = 0.20
 CACHE_CLOCK_SKEW_SECONDS = 1.0
 DEFAULT_WORKERS = 5
@@ -44,6 +44,7 @@ class StockSnapshot:
     source: str
     sector: Optional[str] = None
     industry: Optional[str] = None
+    company_name: Optional[str] = None
     price: Optional[float] = None
     market_cap: Optional[float] = None
     volume: Optional[float] = None
@@ -176,6 +177,7 @@ def fetch_snapshot(t: Ticker) -> StockSnapshot:
             source=t.source,
             sector=info.get("sector"),
             industry=info.get("industry"),
+            company_name=info.get("longName") or info.get("shortName"),
             price=info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose"),
             market_cap=info.get("marketCap"),
             volume=info.get("averageVolume") or info.get("volume"),

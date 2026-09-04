@@ -29,7 +29,7 @@ from stockbot.database.manager import StockDatabaseManager
 from stockbot.database.performance_manager import PerformanceTrackingManager
 from stockbot.screening.funnel import FunnelCandidate, QuantFunnel
 from stockbot.screening.numeric_screen import ScreeningGates
-from stockbot.screening.universe import Ticker
+from stockbot.screening.universe import Ticker, load_universe
 from stockbot.tickers import normalize_ticker
 from stockbot.tools.data import (
     ChartingTool,
@@ -143,6 +143,69 @@ class DeepDiveOutput(BaseModel):
     stocks: List[DeepDiveStock]
 
 
+class BottleneckTheme(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    constrained_input: str = Field(min_length=1)
+    demand_driver: str = Field(min_length=1)
+    change_signal: str = Field(min_length=1)
+    supply_response_lag: str = Field(min_length=1)
+    time_horizon_months: int = Field(ge=1, le=36)
+    evidence: List[str] = Field(min_length=2)
+    source_urls: List[str] = Field(min_length=2)
+
+    @model_validator(mode="after")
+    def validate_sources(self) -> "BottleneckTheme":
+        if any(not url.startswith(("https://", "http://")) for url in self.source_urls):
+            raise ValueError("source_urls must contain HTTP(S) URLs")
+        if len(set(self.source_urls)) < 2:
+            raise ValueError("source_urls must contain two independent URLs")
+        return self
+
+
+class BottleneckCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str = Field(min_length=1)
+    company_name: str = Field(min_length=1)
+    theme: str = Field(min_length=1)
+    role: str = Field(min_length=1)
+    confidence_score: float = Field(ge=0, le=10)
+    earnings_transmission: str = Field(min_length=1)
+    evidence: List[str] = Field(min_length=2)
+    source_urls: List[str] = Field(min_length=2)
+    already_repriced_risk: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_sources(self) -> "BottleneckCandidate":
+        if any(not url.startswith(("https://", "http://")) for url in self.source_urls):
+            raise ValueError("source_urls must contain HTTP(S) URLs")
+        if len(set(self.source_urls)) < 2:
+            raise ValueError("source_urls must contain two independent URLs")
+        return self
+
+
+class BottleneckResearchOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    researched_at: datetime
+    market_regime_summary: str = Field(min_length=1)
+    themes: List[BottleneckTheme] = Field(min_length=1, max_length=8)
+    candidates: List[BottleneckCandidate] = Field(max_length=15)
+
+    @model_validator(mode="after")
+    def validate_candidate_themes(self) -> "BottleneckResearchOutput":
+        theme_names = [theme.name for theme in self.themes]
+        themes = set(theme_names)
+        if len(themes) != len(theme_names):
+            raise ValueError("theme names must be unique")
+        unknown = sorted({candidate.theme for candidate in self.candidates} - themes)
+        if unknown:
+            raise ValueError(f"candidates reference unknown themes: {unknown}")
+        return self
+
+
 class UndervaluedAnalysisFlow:
     """Coordinates the undervalued stock analysis using an Agno agent."""
 
@@ -248,6 +311,24 @@ class UndervaluedAnalysisFlow:
             instructions=reddit_instructions,
             tools=[self.reddit_sentiment_scan],
             markdown=True,
+            add_datetime_to_context=True,
+            timezone_identifier="America/New_York",
+            debug_mode=True,
+        )
+
+        bottleneck_instructions = (
+            load_prompt("bottleneck_research_instructions").strip().split("\n")
+        )
+        self.bottleneck_research_agent = Agent(
+            name="Cross-Sector Bottleneck Researcher",
+            model=OpenAIChat(
+                id=self.reasoning_model_id,
+                temperature=1,
+                max_completion_tokens=8000,
+            ),
+            instructions=bottleneck_instructions,
+            tools=[self.search_global_research, self.search_market_events],
+            markdown=False,
             add_datetime_to_context=True,
             timezone_identifier="America/New_York",
             debug_mode=True,
@@ -1726,6 +1807,7 @@ Report:
         candidates: List[FunnelCandidate],
         stats: Dict[str, Any],
         reddit_overlay: str,
+        bottleneck_context: str,
     ) -> str:
         now = datetime.now(ny_timezone).strftime("%Y-%m-%d %H:%M:%S")
         summaries = [c.to_prompt_summary() for c in candidates]
@@ -1736,6 +1818,116 @@ Report:
             funnel_stats=json.dumps(stats, indent=2, default=str),
             candidates_json=json.dumps(summaries, indent=2, default=str),
             reddit_overlay=reddit_overlay,
+            bottleneck_context=bottleneck_context,
+        )
+
+    @staticmethod
+    def _parse_bottleneck_research_json(text: str) -> Optional[Dict[str, Any]]:
+        """Parse and validate the web research agent's strict JSON response."""
+        if not text:
+            return None
+        cleaned = text.strip()
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        if cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+            if not match:
+                return None
+            try:
+                payload = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return None
+
+        validated = BottleneckResearchOutput.model_validate(payload).model_dump(
+            mode="json"
+        )
+        candidates_by_ticker: Dict[str, Dict[str, Any]] = {}
+        for candidate in validated["candidates"]:
+            ticker = normalize_ticker(candidate["ticker"])
+            candidate["ticker"] = ticker
+            previous = candidates_by_ticker.get(ticker)
+            if previous is None or candidate["confidence_score"] > previous[
+                "confidence_score"
+            ]:
+                candidates_by_ticker[ticker] = candidate
+        validated["candidates"] = list(candidates_by_ticker.values())
+        return validated
+
+    async def _research_bottlenecks(self) -> Optional[Dict[str, Any]]:
+        """Run the broad web-discovery pass; failure leaves the value lane intact."""
+        template = load_prompt("bottleneck_research_prompt")
+        prompt = template.format(
+            timestamp=datetime.now(ny_timezone).strftime("%Y-%m-%d %H:%M:%S")
+        )
+        self._log_prompt_size("Bottleneck research prompt", prompt)
+        try:
+            response = await self.bottleneck_research_agent.arun(prompt)
+            raw_text = self._extract_content(response)
+            research = self._parse_bottleneck_research_json(raw_text)
+            if research is None:
+                await self.save_phase_output(
+                    "bottleneck_research_raw",
+                    raw_text,
+                    "Raw bottleneck research (JSON parse failed)",
+                )
+                return None
+            await self.save_phase_output(
+                "bottleneck_research",
+                json.dumps(research, indent=2, default=str),
+                "Cross-sector bottleneck research",
+            )
+            return research
+        except Exception as exc:
+            print(f"  Bottleneck research unavailable: {exc}")
+            return None
+
+    @staticmethod
+    def _augment_universe_with_research(
+        universe: List[Ticker], research: Optional[Dict[str, Any]]
+    ) -> List[Ticker]:
+        """Ensure researched companies are scanned even outside the base index."""
+        augmented = list(universe)
+        seen = {normalize_ticker(ticker.symbol) for ticker in augmented}
+        for candidate in (research or {}).get("candidates", []):
+            ticker = normalize_ticker(candidate["ticker"])
+            if ticker in seen:
+                continue
+            augmented.append(
+                Ticker(
+                    symbol=ticker,
+                    exchange="TSX" if ticker.endswith(".TO") else "US",
+                    source="bottleneck_research",
+                )
+            )
+            seen.add(ticker)
+        return augmented
+
+    @staticmethod
+    def _format_bottleneck_context(
+        research: Optional[Dict[str, Any]], candidates: List[FunnelCandidate]
+    ) -> str:
+        if not research:
+            return "Cross-sector bottleneck research was unavailable for this run."
+        shortlist_symbols = {candidate.symbol for candidate in candidates}
+        return json.dumps(
+            {
+                "market_regime_summary": research["market_regime_summary"],
+                "themes": research["themes"],
+                "shortlisted_research_candidates": [
+                    candidate
+                    for candidate in research["candidates"]
+                    if candidate["ticker"] in shortlist_symbols
+                ],
+            },
+            indent=2,
+            default=str,
         )
 
     def _parse_deep_dive_json(
@@ -1897,7 +2089,10 @@ Report:
                 "exchange": exchange,
                 "sector": snap.sector,
                 "industry": snap.industry,
-                "discovery_source": "quant_funnel",
+                "discovery_source": "+".join(
+                    getattr(candidate, "discovery_lanes", [])
+                )
+                or "quant_funnel",
                 "confidence_score": float(stock.get("confidence_score") or 5.0),
                 "current_price": snap.price,
                 "market_cap": snap.market_cap,
@@ -1929,6 +2124,7 @@ Report:
         candidates: List[FunnelCandidate],
         deep_dive: Optional[Dict[str, Any]],
         reddit_overlay: str,
+        bottleneck_context: str,
     ) -> str:
         """Compose the final markdown report from funnel stats + deep-dive verdicts."""
         timestamp = datetime.now(ny_timezone).strftime("%Y-%m-%d %H:%M:%S")
@@ -1959,16 +2155,26 @@ Report:
             pe = s.trailing_pe or s.forward_pe
             implied = c.dcf.by_discount_rate if c.dcf and not c.dcf.error else {}
             insider_net = c.insider.net_value_usd if c.insider and not c.insider.error else None
+            lanes = ", ".join(c.discovery_lanes) or "unclassified"
+            scarcity = c.scarcity.score if c.scarcity else 0.0
             lines.append(
                 f"- **{s.symbol}** ({s.sector or 'Unknown'}) · price ${s.price:.2f} · "
                 f"mcap ${(s.market_cap or 0)/1e9:.1f}B · P/E {pe:.1f} · "
                 f"sector value {c.ranking.composite_value_score} · "
                 f"implied growth @10% {implied.get('10%', 'n/a')} · "
                 f"insider net 180d {('$%s' % f'{insider_net:,.0f}') if insider_net is not None else 'n/a'} · "
+                f"lanes {lanes} · scarcity {scarcity:.2f} · "
                 f"funnel score {c.composite_funnel_score}"
             )
 
-        lines += ["", "## Reddit Catalyst Overlay (supporting evidence only)", reddit_overlay]
+        lines += [
+            "",
+            "## Cross-Sector Bottleneck Research",
+            bottleneck_context,
+            "",
+            "## Reddit Catalyst Overlay (supporting evidence only)",
+            reddit_overlay,
+        ]
 
         if deep_dive and deep_dive.get("stocks"):
             lines += ["", "## Deep-Dive Verdicts"]
@@ -2016,6 +2222,22 @@ Report:
         )
 
         try:
+            print("\n=== Stage 1A: Cross-Sector Bottleneck Research (web) ===")
+            bottleneck_research = await self._research_bottlenecks()
+            research_candidates = {
+                candidate["ticker"]: candidate
+                for candidate in (bottleneck_research or {}).get("candidates", [])
+            }
+            base_universe = list(universe) if universe is not None else load_universe()
+            augmented_universe = self._augment_universe_with_research(
+                base_universe, bottleneck_research
+            )
+            print(
+                f"  Research found {len(research_candidates)} public candidates; "
+                f"scanning {len(augmented_universe) - len(base_universe)} outside "
+                "the base universe."
+            )
+
             # Stages 1-5: deterministic quant funnel
             print("\n=== Stages 1-5: Quant Funnel (deterministic) ===")
             funnel = QuantFunnel(
@@ -2024,11 +2246,20 @@ Report:
                 top_n_for_insider=20,
                 top_n_final=10,
                 workers=5,
-                universe=universe,
+                universe=augmented_universe,
+                bottleneck_research=research_candidates,
             )
             result = funnel.run()
             shortlist: List[FunnelCandidate] = result["candidates"]
             stats: Dict[str, Any] = result["stats"]
+            stats["stage_1_base_universe_size"] = len(base_universe)
+            stats["stage_1_research_candidates"] = len(research_candidates)
+            stats["stage_1_research_tickers_added"] = (
+                len(augmented_universe) - len(base_universe)
+            )
+            stats["bottleneck_research_status"] = (
+                "loaded" if bottleneck_research else "unavailable"
+            )
             funnel_map = {c.symbol: c for c in shortlist}
 
             print(f"\nFunnel produced {len(shortlist)} candidates.")
@@ -2043,12 +2274,17 @@ Report:
             # Lightweight Reddit overlay on the shortlist only
             print("\nFetching Reddit catalyst overlay for shortlist...")
             reddit_overlay = self._get_reddit_overlay(shortlist)
+            bottleneck_context = self._format_bottleneck_context(
+                bottleneck_research, shortlist
+            )
 
             # Stage 6: Agent deep-dive with structured JSON output
             print("\n=== Stage 6: Agent Deep-Dive (LLM narrative) ===")
             deep_dive_dict: Optional[Dict[str, Any]] = None
             if shortlist:
-                prompt = self._build_funnel_deep_dive_prompt(shortlist, stats, reddit_overlay)
+                prompt = self._build_funnel_deep_dive_prompt(
+                    shortlist, stats, reddit_overlay, bottleneck_context
+                )
                 self._log_prompt_size("Deep-dive prompt", prompt)
                 response = await self.deep_dive_agent.arun(prompt)
                 raw_text = self._extract_content(response)
@@ -2078,7 +2314,11 @@ Report:
 
             # Compose + save final report
             final_report = self._format_funnel_report(
-                stats, shortlist, deep_dive_dict, reddit_overlay
+                stats,
+                shortlist,
+                deep_dive_dict,
+                reddit_overlay,
+                bottleneck_context,
             )
             await self.save_phase_output(
                 "final_report",
