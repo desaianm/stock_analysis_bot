@@ -1,0 +1,33 @@
+Current Date and Time: {timestamp}
+
+Research emerging, investable supply-chain bottlenecks across the entire economy. Discover the themes from current evidence; do not use a fixed sector list.
+
+Return exactly this JSON shape:
+{{
+  "researched_at": "<ISO timestamp>",
+  "market_regime_summary": "<brief summary of where physical capacity is tightening and why>",
+  "themes": [
+    {{
+      "name": "<short unique theme name>",
+      "constrained_input": "<specific material, component, capacity, service, or infrastructure>",
+      "demand_driver": "<specific source of accelerating demand>",
+      "time_horizon_months": <integer 1-36>,
+      "evidence": ["<quantified fact 1>", "<independent fact 2>"],
+      "source_urls": ["<url 1>", "<url 2>"]
+    }}
+  ],
+  "candidates": [
+    {{
+      "ticker": "<Yahoo Finance-compatible symbol>",
+      "company_name": "<public company>",
+      "theme": "<exact matching theme name>",
+      "role": "<producer, equipment supplier, substitute, logistics provider, or enabler>",
+      "confidence_score": <float 0-10>,
+      "evidence": ["<how earnings can benefit 1>", "<how earnings can benefit 2>"],
+      "source_urls": ["<url 1>", "<url 2>"],
+      "already_repriced_risk": "<specific valuation, capacity-response, substitution, or demand risk>"
+    }}
+  ]
+}}
+
+Respond with ONLY the JSON object. Start with `{{` and end with `}}`.

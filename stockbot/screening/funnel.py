@@ -1,10 +1,12 @@
-"""Quant funnel orchestrator: universe → numeric gate → ranking → DCF → insider → top-N.
+"""Dual-lane funnel: value + researched bottlenecks → ranking → DCF → insider.
 
 Run ``QuantFunnel(...).run()`` to get a list of FunnelCandidate objects, each
-annotated with sector-relative ranking, reverse-DCF margin of safety, and
-recent insider activity. Hand this list to the agent for narrative deep-dive.
+annotated with sector-relative ranking, reverse-DCF margin of safety, recent
+insider activity, and any validated scarcity signal. Hand this list to the
+agent for narrative deep-dive.
 
-Reddit is intentionally NOT consulted here — it's added in
+Web research is performed by the owning flow and passed in as structured
+candidate evidence. Reddit is intentionally NOT consulted here — it's added in
 ``stockbot/flows/undervalued.py`` as a Stage-5 catalyst overlay alongside
 analyst targets and recent news.
 """
@@ -33,7 +35,6 @@ from stockbot.tools.insider import (
     fetch_insider_summary,
     insider_signal_score,
 )
-from stockbot.tools.institutional import InstitutionalPortfolio
 
 
 @dataclass
@@ -100,9 +101,7 @@ class FunnelCandidate:
             "discovery_lanes": self.discovery_lanes,
             "scarcity_score": self.scarcity.score if self.scarcity else None,
             "scarcity_reasons": self.scarcity.reasons if self.scarcity else [],
-            "situational_awareness_13f_positions": (
-                self.scarcity.institutional_positions if self.scarcity else []
-            ),
+            "bottleneck_research": self.scarcity.research if self.scarcity else None,
             "composite_funnel_score": self.composite_funnel_score,
         }
 
@@ -116,7 +115,7 @@ class QuantFunnel:
     top_n_final: int = 10
     top_n_scarcity: int = 5
     universe: Optional[List[Ticker]] = None
-    institutional_portfolio: Optional[InstitutionalPortfolio] = None
+    bottleneck_research: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     force_refresh: bool = False
     workers: int = 5
 
@@ -142,7 +141,9 @@ class QuantFunnel:
             for snapshot in ok_snaps
             if (
                 signal := score_scarcity_candidate(
-                    snapshot, self.gates, self.institutional_portfolio
+                    snapshot,
+                    self.gates,
+                    self.bottleneck_research.get(snapshot.symbol),
                 )
             )
         ]

@@ -1,30 +1,13 @@
-"""Forward-looking scarcity/capacity lane for the undervalued funnel."""
+"""Financial validation for supply-chain bottlenecks found by web research."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from stockbot.screening.numeric_screen import ScreeningGates, StockSnapshot
-from stockbot.tools.institutional import InstitutionalPortfolio
 
 
-SCARCITY_INDUSTRY_TERMS = (
-    "communication equipment",
-    "computer hardware",
-    "data center",
-    "electrical equipment",
-    "electronic components",
-    "infrastructure operations",
-    "memory",
-    "networking",
-    "power generation",
-    "semiconductor",
-    "solar",
-    "specialty industrial machinery",
-    "storage",
-    "utilities - renewable",
-)
 MIN_SCARCITY_SCORE = 4.0
 
 
@@ -33,8 +16,7 @@ class ScarcitySignal:
     symbol: str
     score: float
     reasons: List[str] = field(default_factory=list)
-    institutional_direct_long_value: float = 0.0
-    institutional_positions: List[dict] = field(default_factory=list)
+    research: Dict[str, Any] = field(default_factory=dict)
 
 
 def _at_least(value: Optional[float], threshold: float) -> bool:
@@ -44,10 +26,15 @@ def _at_least(value: Optional[float], threshold: float) -> bool:
 def score_scarcity_candidate(
     snapshot: StockSnapshot,
     gates: ScreeningGates,
-    portfolio: Optional[InstitutionalPortfolio] = None,
+    research: Optional[Dict[str, Any]],
 ) -> Optional[ScarcitySignal]:
-    """Score capacity-constrained growth without relaxing basic liquidity safety."""
-    if snapshot.error:
+    """Validate a researched bottleneck beneficiary against live fundamentals.
+
+    Web research supplies the changing industry thesis. This function is
+    intentionally industry-agnostic and only decides whether the named public
+    company has enough liquidity and financial traction to enter the funnel.
+    """
+    if not research or snapshot.error:
         return None
     if snapshot.price is None or snapshot.price < gates.min_price:
         return None
@@ -56,25 +43,21 @@ def score_scarcity_candidate(
     if snapshot.market_cap is None or snapshot.market_cap < gates.min_market_cap:
         return None
 
-    positions = portfolio.positions_for(snapshot.company_name) if portfolio else []
-    direct_long_value = (
-        portfolio.direct_long_value(snapshot.company_name) if portfolio else 0.0
-    )
-    industry = (snapshot.industry or "").lower()
-    thematic_match = any(term in industry for term in SCARCITY_INDUSTRY_TERMS)
-    if not thematic_match and direct_long_value <= 0:
-        return None
-
-    # This lane can admit a temporarily expensive stock, but it still requires
-    # cash generation or clearly strong top-line growth.
+    # A researched company may exceed the classic price/P-E ceiling, but it
+    # still needs positive FCF or strong top-line growth to avoid pure stories.
     if not (
-        snapshot.free_cash_flow is not None
-        and snapshot.free_cash_flow > 0
+        snapshot.free_cash_flow is not None and snapshot.free_cash_flow > 0
     ) and not _at_least(snapshot.revenue_growth, 0.20):
         return None
 
-    score = 1.5
-    reasons = [f"capacity-sensitive industry: {snapshot.industry or 'unknown'}"]
+    confidence = float(research.get("confidence_score") or 0.0)
+    if confidence < 6.0:
+        return None
+    score = min(confidence, 10.0) * 0.30
+    reasons = [
+        f"researched bottleneck: {research.get('theme', 'unknown')}",
+        f"supply-chain role: {research.get('role', 'unknown')}",
+    ]
 
     revenue_growth = snapshot.revenue_growth or 0.0
     if revenue_growth >= 0.40:
@@ -125,13 +108,6 @@ def score_scarcity_candidate(
         score += 0.5
         reasons.append(f"{drawdown:.1%} below 52-week high")
 
-    if direct_long_value > 0:
-        score += 1.5
-        reasons.append(
-            "direct long in latest Situational Awareness 13F "
-            f"(${direct_long_value / 1_000_000:.1f}M disclosed value)"
-        )
-
     score = round(score, 2)
     if score < MIN_SCARCITY_SCORE:
         return None
@@ -139,6 +115,5 @@ def score_scarcity_candidate(
         symbol=snapshot.symbol,
         score=score,
         reasons=reasons,
-        institutional_direct_long_value=direct_long_value,
-        institutional_positions=positions,
+        research=research,
     )

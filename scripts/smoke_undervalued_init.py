@@ -32,7 +32,8 @@ def main():
     print(
         f"  agents: screening={flow.screening_agent.name}, "
         f"turnaround={flow.turnaround_agent.name}, "
-        f"reddit={flow.reddit_sentiment_agent.name}"
+        f"reddit={flow.reddit_sentiment_agent.name}, "
+        f"bottleneck={flow.bottleneck_research_agent.name}"
     )
     print(f"  tools wired to screening: {len(flow.screening_agent.tools)}")
 
